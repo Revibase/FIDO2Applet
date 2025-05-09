@@ -62,7 +62,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     /**
      * If true, the authenticator cannot reset itself ever after installation.
      */
-    private boolean PREVENT_RESETS;
+    private boolean DISABLE_RESETS;
+    /**
+     * If true, the authenticator cannot set a pin ever.
+     */
+    private boolean DISABLE_PIN_SET;
     /**
      * If true, the authenticator will refuse to reset itself until the following
      * three steps happen in order:
@@ -3830,11 +3834,16 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 getAssertion(apdu, Short.MAX_VALUE, null, transientStorage.getAssertIterationPointer());
                 break;
             case FIDOConstants.CMD_CLIENT_PIN:
+                if (DISABLE_PIN_SET) {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_NOT_ALLOWED);
+                }
                 reqBuffer = fullyReadReq(apdu, lc, amtRead, true);
-
                 clientPINSubcommand(apdu, reqBuffer, lcEffective);
                 break;
             case FIDOConstants.CMD_RESET:
+                if (DISABLE_RESETS) {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_NOT_ALLOWED);
+                }
                 authenticatorReset(apdu);
                 break;
             case FIDOConstants.CMD_CREDENTIAL_MANAGEMENT: // intentional fallthrough, for backwards compat
@@ -5643,9 +5652,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
      * @param apdu Request/response object
      */
     private void authenticatorReset(APDU apdu) {
-        if (PREVENT_RESETS) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_OPERATION_DENIED);
-        }
         if (PROTECT_AGAINST_MALICIOUS_RESETS) {
             if (transientStorage.isResetCommandSentSincePowerOn()) {
                 // Already tried to reset once since power applied, and the protection feature
@@ -7133,7 +7139,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         FORCE_ALWAYS_UV = false;
         USE_LOW_SECURITY_FOR_SOME_RKS = true;
         PROTECT_AGAINST_MALICIOUS_RESETS = false;
-        PREVENT_RESETS = true;
         ONE_USE_PER_PIN_TOKEN = false;
         WRITES_INVALIDATE_PINS = true;
         PIN_KDF_ITERATIONS = 5;
@@ -7145,6 +7150,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         FLASH_SCRATCH_SIZE = 1024;
         STORE_PIN_LENGTH = true;
         CERTIFICATION_LEVEL = 0;
+        DISABLE_PIN_SET = false;
+        DISABLE_RESETS = false;
 
         // Next, read any overrides
         final short initOffset = offset;
@@ -7254,6 +7261,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         break;
                     case 0x10:
                         WRITES_INVALIDATE_PINS = array[offset++] == (byte) 0xF5;
+                        break;
+                    case 0x11:
+                        DISABLE_PIN_SET = array[offset++] == (byte) 0xF5;
+                        break;
+                    case 0x12:
+                        DISABLE_RESETS = array[offset++] == (byte) 0xF5;
                         break;
                     default:
                         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
