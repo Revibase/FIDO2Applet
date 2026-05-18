@@ -1,19 +1,19 @@
 #!/usr/bin/env python
 
-import sys
 import argparse
 import base64
 import binascii
+import secrets
+import sys
 
+from cryptography.hazmat.primitives._serialization import (Encoding,
+                                                           NoEncryption,
+                                                           PrivateFormat)
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_der_private_key
 from fido2.ctap2 import Ctap2
 from fido2.ctap2.base import args as ctap_args
 from fido2.pcsc import CtapPcscDevice
-
-import secrets
-
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives._serialization import Encoding, PrivateFormat, NoEncryption
-from cryptography.hazmat.primitives.serialization import load_der_private_key
 
 from python_tests.ctap.ctap_test import BasicAttestationTestCase
 
@@ -32,7 +32,7 @@ if __name__ == '__main__':
                         default=None,
                         help='CA private key, expressed as base64-encoded unencrypted PKCS8 DER')
     parser.add_argument('--org',
-                        default='ACME',
+                        default='REVIBASE',
                         help='Organization name to use for certificates')
     parser.add_argument('--country',
                         default='US',
