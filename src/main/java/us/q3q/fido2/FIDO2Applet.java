@@ -2420,7 +2420,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         byte potentialAssertionIterationPointer = 0;
 
-        if (allowListLength == 0 && numResidentCredentials > 0) {
+        // fallback to use residentCredentials if allowlist doesn't match
+        if (!acceptedMatch && numResidentCredentials > 0) {
             // Scan resident keys for match
 
             short credTempHandle = bufferManager.allocate(apdu, CREDENTIAL_PAYLOAD_LEN, BufferManager.ANYWHERE);
