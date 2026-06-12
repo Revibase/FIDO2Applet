@@ -121,8 +121,14 @@ class JCardSimTestCase(TestCase, abc.ABC):
         elif len(test_jars) > 1:
             raise ValueError("More than one test jar in build/libs - remove all but one")
 
-        jc_home = os.path.join(my_path, 'sdks', 'jc305u4_kit')
+        jc_home = os.environ.get('JC_HOME')
+        if jc_home is None:
+            jc_home = os.path.join(my_path, 'sdks', 'jc305u4_kit')
+        elif not os.path.isabs(jc_home):
+            jc_home = os.path.abspath(os.path.join(my_path, jc_home))
         jc_jars = os.path.join(jc_home, 'lib')
+        if not os.path.isdir(jc_jars):
+            raise ValueError(f"JC_HOME lib not found: {jc_jars}")
 
         classpath = [
             os.path.abspath(os.path.join(path_to_jars, main_jars[0])),  # Applet jar
@@ -146,7 +152,10 @@ class JCardSimTestCase(TestCase, abc.ABC):
             # Reset the simulator to fresh
             sim.resetRuntime()
             sim.reset()
-            VSim.installApplet(sim, command)
+            if isinstance(command, tuple):
+                VSim.installApplet(sim, command[0], command[1])
+            else:
+                VSim.installApplet(sim, command)
             return None
         elif command_type == CommandType.SOFT_RESET:
             VSim.softReset(sim)
@@ -219,14 +228,20 @@ class JCardSimTestCase(TestCase, abc.ABC):
             p.join()
         cls.p = []
 
-    def setUp(self, install_params: Optional[bytes] = None) -> None:
+    def setUp(self, install_params: Optional[bytes | tuple[bytes, Optional[bytes]]] = None) -> None:
         assert self.p[0].is_alive()
+        ndef_params: Optional[bytes] = None
+        if isinstance(install_params, tuple):
+            install_params, ndef_params = install_params
         if install_params is None:
             install_params = bytes()
         # Javacard install parameters are prefixed by AID and platform info
         ip_len = len(install_params)
         install_params = bytes([1, 95, 1, 86, ip_len]) + install_params
-        self.q_out.put((CommandType.APPLET_REINSTALL, install_params))  # Tell JVM to reset applet state
+        command: bytes | tuple[bytes, bytes] = install_params
+        if ndef_params is not None:
+            command = (install_params, ndef_params)
+        self.q_out.put((CommandType.APPLET_REINSTALL, command))  # Tell JVM to reset applet state
         self.q_in.get(block=True)  # Wait for applet to be started in JVM
 
     def tearDown(self) -> None:
@@ -236,6 +251,10 @@ class JCardSimTestCase(TestCase, abc.ABC):
     def softResetCard(self) -> None:
         self.q_out.put((CommandType.SOFT_RESET, None))
         self.q_in.get(block=True)
+
+    def transmit_apdu(self, apdu: bytes) -> bytes:
+        self.q_out.put((CommandType.DIRECT_COMMUNICATE, list(apdu)))
+        return bytes(self.q_in.get(block=True))
 
 
 class FakeSCConnection:

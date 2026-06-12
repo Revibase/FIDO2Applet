@@ -18,8 +18,18 @@ if (!jcHomeSet) {
     project.logger.warn("You may point JC_HOME at one of the sdks in the git submodule (e.g. sdks/jc303_kit?)")
 }
 
-group = "us.q3q"
 version = "1.0-SNAPSHOT"
+
+group = "us.q3q"
+
+sourceSets {
+    test {
+        java {
+            srcDir "./applet-stub/src/main/java"
+            exclude "**/NdefService.java"
+        }
+    }
+}
 
 repositories {
     mavenCentral()
@@ -72,5 +82,11 @@ if (jcHomeSet) {
                 }
             }
         }
+    }
+
+    tasks.register("buildAllCaps") {
+        group = "build"
+        description = "Build FIDO2 and NDEF stub CAP files"
+        dependsOn("buildJavaCard", ":applet-stub:buildJavaCard")
     }
 }

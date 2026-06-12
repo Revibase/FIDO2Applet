@@ -1,0 +1,38 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url "https://javacard.pro/maven" }
+    }
+}
+
+plugins {
+    id("java")
+    id("com.klinec.gradle.javacard") version "1.8.0" apply false
+}
+
+var jcHomeSet = System.getenv("JC_HOME") != null
+if (!jcHomeSet) {
+    project.logger.warn("JC_HOME environment variable not set - cannot build NDEF stub CAP")
+}
+
+repositories {
+    mavenCentral()
+}
+
+if (jcHomeSet) {
+    apply plugin: "com.klinec.gradle.javacard"
+    javacard {
+        config {
+            cap {
+                packageName 'org.openjavacard.ndef.stub'
+                version '0.0'
+                aid 'D276000177100211020001'
+                output 'openjavacard-ndef-stub.cap'
+                applet {
+                    className 'org.openjavacard.ndef.stub.NdefApplet'
+                    aid 'D27600017710021102000101'
+                }
+            }
+        }
+    }
+}

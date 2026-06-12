@@ -2,7 +2,13 @@
 /.idea
 /build
 /venv
+/venv-x86
 __pycache__
 /bin
 certs.json
+config/card.json
+*.provision-state.json
 install.sh
+.cursor
+graphify-out
+applet-stub/build

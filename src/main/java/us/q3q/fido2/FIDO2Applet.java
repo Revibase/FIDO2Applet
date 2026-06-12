@@ -1,10 +1,12 @@
 package us.q3q.fido2;
 
+import javacard.framework.AID;
 import javacard.framework.APDU;
 import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
+import javacard.framework.Shareable;
 import javacard.framework.Util;
 import javacard.security.AESKey;
 import javacard.security.CryptoException;
@@ -20,10 +22,12 @@ import javacard.security.Signature;
 import javacardx.apdu.ExtendedLength;
 import javacardx.crypto.Cipher;
 
+import org.openjavacard.ndef.stub.NdefService;
+
 /**
  * Core applet class implementing FIDO2 specifications on Javacard
  */
-public final class FIDO2Applet extends Applet implements ExtendedLength {
+public final class FIDO2Applet extends Applet implements ExtendedLength, NdefService {
 
     /**
      * The version of this applet in use
@@ -68,9 +72,37 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
      */
     private boolean DISABLE_PIN_SET;
     /**
-     * If true, the authenticator only allows one account per rp.
+     * If true, the authenticator allows at most one discoverable credential for one
+     * RP ID and one account device-wide.
      */
-    private boolean ONLY_ALLOW_ONE_ACCOUNT_PER_RP_ID;
+    private boolean ONLY_ALLOW_ONE_RESIDENT_CREDENTIAL;
+    /**
+     * NDEF dynamic URL base (install-time), ASCII bytes without trailing query string.
+     */
+    private byte[] ndefBaseUrl;
+    private short ndefBaseUrlLen;
+    /**
+     * Scratch for crypto and URL assembly during NDEF generation.
+     */
+    private byte[] ndefWorkBuffer;
+    /**
+     * Shareable service ID for the NDEF stub applet ({@code applet-stub/}).
+     */
+    private static final byte NDEF_SERVICE_ID = (byte) 0x3F;
+    private static final short NDEF_NONCE_LEN = 8;
+    private static final short COMPRESSED_PUBKEY_LEN = 33;
+    private static final short NDEF_RAW_SIG_LEN = 64;
+    /** Worst-case signed query length: {@code ?pk=..&c=4294967295&n=..&s=..}. */
+    private static final short NDEF_MAX_QUERY_LEN = 166;
+    /** Max install-time base URL length (includes {@code https://}). */
+    private static final short MAX_NDEF_BASE_URL_LEN = (short) ((254 + 8) - NDEF_MAX_QUERY_LEN);
+    private static final short NDEF_WORK_BUF_SIZE = 268;
+    private static final short NDEF_DECIMAL_SCRATCH = 0;
+    /** Prebuilt Type 4 file for {@code https://not-provisioned}. */
+    private static final byte[] NDEF_PLACEHOLDER_FILE = {
+            0x00, 0x15, (byte) 0xD1, 0x01, 0x11, 0x55, 0x04,
+            'n', 'o', 't', '-', 'p', 'r', 'o', 'v', 'i', 's', 'i', 'o', 'n', 'e', 'd'
+    };
     /**
      * If true, the authenticator will refuse to reset itself until the following
      * three steps happen in order:
@@ -1005,6 +1037,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_PIN_REQUIRED);
         }
 
+        if (ONLY_ALLOW_ONE_RESIDENT_CREDENTIAL && !transientStorage.hasRKOption()) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_OPTION);
+        }
+
         // Done getting params - make a keypair. You know, what we're supposed to do in
         // this function?
         // Well, we're getting to it, only 150 lines in.
@@ -1050,12 +1086,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         // This credential matches the RP we're looking at.
                         foundRPMatchInRKs = true;
 
-                        // INSTEAD OF OVERWRITING the public key, we should throw an error if the user
-                        // tries to create another user in an exisitng rpid.
-                        if (ONLY_ALLOW_ONE_ACCOUNT_PER_RP_ID) {
-                            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CREDENTIAL_EXCLUDED);
-                        }
-
                         // ... but it might not match the user ID we're requesting...
                         if (userIdLen == residentKeys[i].getUserIdLength()) {
                             // DECRYPT the encrypted user ID we stored for this RK, so we can compare
@@ -1073,6 +1103,14 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                             }
                         }
                     }
+                }
+            }
+
+            if (ONLY_ALLOW_ONE_RESIDENT_CREDENTIAL && numResidentCredentials > 0) {
+                if (!foundRPMatchInRKs) {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_LIMIT_EXCEEDED);
+                } else if (!foundMatchingRK) {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CREDENTIAL_EXCLUDED);
                 }
             }
 
@@ -7179,7 +7217,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         CERTIFICATION_LEVEL = 0;
         DISABLE_PIN_SET = false;
         DISABLE_RESETS = false;
-        ONLY_ALLOW_ONE_ACCOUNT_PER_RP_ID = false;
+        ONLY_ALLOW_ONE_RESIDENT_CREDENTIAL = false;
+        ndefBaseUrl = null;
+        ndefBaseUrlLen = 0;
 
         // Next, read any overrides
         final short initOffset = offset;
@@ -7297,7 +7337,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         DISABLE_RESETS = array[offset++] == (byte) 0xF5;
                         break;
                     case 0x13:
-                        ONLY_ALLOW_ONE_ACCOUNT_PER_RP_ID = array[offset++] == (byte) 0xF5;
+                        ONLY_ALLOW_ONE_RESIDENT_CREDENTIAL = array[offset++] == (byte) 0xF5;
+                        break;
+                    case 0x14:
+                        offset = parseNdefBaseUrlInstallParam(array, offset);
                         break;
                     default:
                         ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -7347,6 +7390,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         sha256 = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
 
         transientStorage = new TransientStorage();
+
+        ndefWorkBuffer = JCSystem.makeTransientByteArray(NDEF_WORK_BUF_SIZE, JCSystem.CLEAR_ON_DESELECT);
 
         final short availableMem = JCSystem.getAvailableMemory(JCSystem.MEMORY_TYPE_TRANSIENT_DESELECT);
 
@@ -7652,6 +7697,233 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             // We can't work without a real random number generator
             throwException(ISO7816.SW_DATA_INVALID);
         }
+    }
+
+    /**
+     * Provides the NDEF stub applet with a shareable dynamic-tag backend.
+     */
+    public Shareable getShareableInterfaceObject(AID clientAID, byte parameter) {
+        if (parameter == NDEF_SERVICE_ID) {
+            return this;
+        }
+        return null;
+    }
+
+    /**
+     * Builds a read-only NDEF Type 4 data file containing a signed dynamic URL.
+     */
+    public byte[] getData() {
+        if (numResidentCredentials == 0 || ndefBaseUrlLen == 0) {
+            return NDEF_PLACEHOLDER_FILE;
+        }
+
+        final short pubXYOff = (short) 0;
+        final short compressedOff = (short) 64;
+        final short counterOff = (short) 97;
+        final short nonceOff = (short) 101;
+        final short credScratchOff = (short) 109;
+        final short sigOff = (short) 189;
+
+        residentKeys[0].unpackPublicKey(ndefWorkBuffer, pubXYOff);
+        compressSecp256r1PublicKey(ndefWorkBuffer, pubXYOff, ndefWorkBuffer, compressedOff);
+
+        if (!counter.increment((short) 1)) {
+            ISOException.throwIt(ISO7816.SW_FILE_FULL);
+        }
+        counter.pack(ndefWorkBuffer, counterOff);
+        random.generateData(ndefWorkBuffer, nonceOff, NDEF_NONCE_LEN);
+
+        extractRKMixed(residentKeys[0].getEncryptedCredentialID(), (short) 0,
+                ndefWorkBuffer, credScratchOff, (short) 0);
+        loadScratchIntoAttester(ndefWorkBuffer, (short) (credScratchOff + RP_HASH_LEN));
+
+        final short sigLen = attester.sign(ndefWorkBuffer, counterOff, (short) 12,
+                ndefWorkBuffer, sigOff);
+        ecKeyPair.getPrivate().clearKey();
+        normalizeDerSigToRaw64(ndefWorkBuffer, sigOff, sigLen, ndefWorkBuffer, sigOff);
+
+        return buildSignedNdefDataFile(ndefWorkBuffer, compressedOff,
+                ndefWorkBuffer, counterOff,
+                ndefWorkBuffer, nonceOff,
+                ndefWorkBuffer, sigOff);
+    }
+
+    private short parseNdefBaseUrlInstallParam(byte[] array, short offset) {
+        final byte tag = array[offset++];
+        short urlLen;
+        if (tag == (byte) 0x78 || tag == (byte) 0x58) {
+            urlLen = (short) (array[offset++] & 0xFF);
+        } else if (tag == (byte) 0x79 || tag == (byte) 0x59) {
+            urlLen = Util.getShort(array, offset);
+            offset = (short) (offset + 2);
+        } else if ((tag & (byte) 0xE0) == (byte) 0x60 || (tag & (byte) 0xE0) == (byte) 0x40) {
+            urlLen = (short) (tag & 0x1F);
+        } else {
+            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+            return offset;
+        }
+        if (urlLen <= 0 || urlLen > MAX_NDEF_BASE_URL_LEN) {
+            ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+        }
+        ndefBaseUrl = new byte[urlLen];
+        Util.arrayCopyNonAtomic(array, offset, ndefBaseUrl, (short) 0, urlLen);
+        ndefBaseUrlLen = urlLen;
+        return (short) (offset + urlLen);
+    }
+
+    private void compressSecp256r1PublicKey(byte[] xy, short xyOff, byte[] out, short outOff) {
+        out[outOff] = (byte) (0x02 | (xy[(short) (xyOff + 63)] & 1));
+        Util.arrayCopyNonAtomic(xy, xyOff, out, (short) (outOff + 1), (short) 32);
+    }
+
+    private short countUInt32DecimalDigits(byte[] beCounter, short beOff) {
+        Util.arrayCopyNonAtomic(beCounter, beOff, ndefWorkBuffer, NDEF_DECIMAL_SCRATCH, (short) 4);
+        if (ndefWorkBuffer[NDEF_DECIMAL_SCRATCH] == 0 && ndefWorkBuffer[1] == 0
+                && ndefWorkBuffer[2] == 0 && ndefWorkBuffer[3] == 0) {
+            return 1;
+        }
+        short digits = 0;
+        while (ndefWorkBuffer[NDEF_DECIMAL_SCRATCH] != 0 || ndefWorkBuffer[1] != 0
+                || ndefWorkBuffer[2] != 0 || ndefWorkBuffer[3] != 0) {
+            divideUInt32By10(ndefWorkBuffer, NDEF_DECIMAL_SCRATCH);
+            digits++;
+        }
+        return digits;
+    }
+
+    private short appendUInt32Decimal(byte[] beCounter, short beOff, byte[] out, short outOff) {
+        Util.arrayCopyNonAtomic(beCounter, beOff, ndefWorkBuffer, NDEF_DECIMAL_SCRATCH, (short) 4);
+
+        if (ndefWorkBuffer[NDEF_DECIMAL_SCRATCH] == 0 && ndefWorkBuffer[1] == 0
+                && ndefWorkBuffer[2] == 0 && ndefWorkBuffer[3] == 0) {
+            out[outOff] = '0';
+            return 1;
+        }
+
+        short digitPos = (short) (outOff + 10);
+        short numDigits = 0;
+        while (ndefWorkBuffer[NDEF_DECIMAL_SCRATCH] != 0 || ndefWorkBuffer[1] != 0
+                || ndefWorkBuffer[2] != 0 || ndefWorkBuffer[3] != 0) {
+            out[--digitPos] = (byte) ('0' + divideUInt32By10(ndefWorkBuffer, NDEF_DECIMAL_SCRATCH));
+            numDigits++;
+        }
+        Util.arrayCopyNonAtomic(out, digitPos, out, outOff, numDigits);
+        return numDigits;
+    }
+
+    private short divideUInt32By10(byte[] number, short off) {
+        short remainder = 0;
+        for (short i = off; i < (short) (off + 4); i++) {
+            final short v = (short) ((remainder << 8) | (number[i] & 0xFF));
+            number[i] = (byte) (v / 10);
+            remainder = (short) (v % 10);
+        }
+        return remainder;
+    }
+
+    private byte[] buildSignedNdefDataFile(byte[] compressedPub, short compressedOff,
+            byte[] counterBE, short counterOff,
+            byte[] nonce, short nonceOff,
+            byte[] signature, short sigOff) {
+        final byte prefixCode;
+        final short schemeSkip;
+        if (ndefBaseUrlLen >= 8 && ndefBaseUrl[0] == 'h' && ndefBaseUrl[1] == 't'
+                && ndefBaseUrl[2] == 't' && ndefBaseUrl[3] == 'p'
+                && ndefBaseUrl[4] == 's' && ndefBaseUrl[5] == ':'
+                && ndefBaseUrl[6] == '/' && ndefBaseUrl[7] == '/') {
+            prefixCode = 0x04;
+            schemeSkip = 8;
+        } else if (ndefBaseUrlLen >= 7 && ndefBaseUrl[0] == 'h' && ndefBaseUrl[1] == 't'
+                && ndefBaseUrl[2] == 't' && ndefBaseUrl[3] == 'p'
+                && ndefBaseUrl[4] == ':' && ndefBaseUrl[5] == '/'
+                && ndefBaseUrl[6] == '/') {
+            prefixCode = 0x03;
+            schemeSkip = 7;
+        } else {
+            prefixCode = 0x00;
+            schemeSkip = 0;
+        }
+
+        final short baseBodyLen = (short) (ndefBaseUrlLen - schemeSkip);
+        final short counterDigits = countUInt32DecimalDigits(counterBE, counterOff);
+        final short bodyLen = (short) (baseBodyLen + 154 + counterDigits);
+        final short ndefPayloadLen = (short) (1 + bodyLen);
+        if (ndefPayloadLen > 255) {
+            ISOException.throwIt(ISO7816.SW_FILE_FULL);
+        }
+
+        final short ndefMsgLen = (short) (4 + ndefPayloadLen);
+        final short fileLen = (short) (2 + ndefMsgLen);
+        final byte[] file = JCSystem.makeTransientByteArray(fileLen, JCSystem.CLEAR_ON_DESELECT);
+        Util.setShort(file, (short) 0, ndefMsgLen);
+        file[2] = (byte) 0xD1;
+        file[3] = 0x01;
+        file[4] = (byte) ndefPayloadLen;
+        file[5] = 0x55;
+        file[6] = prefixCode;
+
+        short pos = (short) 7;
+        pos = Util.arrayCopyNonAtomic(ndefBaseUrl, schemeSkip, file, pos, baseBodyLen);
+        file[pos++] = '?';
+        file[pos++] = 'p';
+        file[pos++] = 'k';
+        file[pos++] = '=';
+        pos = (short) (pos + Base64UrlUtil.encode(compressedPub, compressedOff, COMPRESSED_PUBKEY_LEN, file, pos));
+        file[pos++] = '&';
+        file[pos++] = 'c';
+        file[pos++] = '=';
+        pos = (short) (pos + appendUInt32Decimal(counterBE, counterOff, file, pos));
+        file[pos++] = '&';
+        file[pos++] = 'n';
+        file[pos++] = '=';
+        pos = (short) (pos + Base64UrlUtil.encode(nonce, nonceOff, NDEF_NONCE_LEN, file, pos));
+        file[pos++] = '&';
+        file[pos++] = 's';
+        file[pos++] = '=';
+        pos = (short) (pos + Base64UrlUtil.encode(signature, sigOff, NDEF_RAW_SIG_LEN, file, pos));
+        return file;
+    }
+
+    private void normalizeDerSigToRaw64(byte[] sig, short sigOff, short sigLen,
+            byte[] out, short outOff) {
+        if (sigLen == NDEF_RAW_SIG_LEN) {
+            if (sigOff != outOff) {
+                Util.arrayCopyNonAtomic(sig, sigOff, out, outOff, NDEF_RAW_SIG_LEN);
+            }
+            return;
+        }
+        if (sigLen < 8 || sig[sigOff] != 0x30) {
+            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        short pos = (short) (sigOff + 2);
+        if (sig[(short) (sigOff + 1)] == 0x81) {
+            pos = (short) (sigOff + 3);
+        }
+        if (sig[pos++] != 0x02) {
+            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        short rLen = (short) (sig[pos++] & 0xFF);
+        final short rStart = pos;
+        pos = (short) (pos + rLen);
+        if (sig[pos++] != 0x02) {
+            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        }
+        short sLen = (short) (sig[pos++] & 0xFF);
+        final short sStart = pos;
+
+        Util.arrayFillNonAtomic(out, outOff, NDEF_RAW_SIG_LEN, (byte) 0);
+        copyDerFieldToRaw32(sig, rStart, rLen, out, outOff);
+        copyDerFieldToRaw32(sig, sStart, sLen, out, (short) (outOff + 32));
+    }
+
+    private void copyDerFieldToRaw32(byte[] in, short inOff, short inLen, byte[] out, short outOff) {
+        short srcOff = inOff;
+        short copyLen = inLen;
+        if (copyLen > 32) {
+            srcOff = (short) (inOff + (copyLen - 32));
+            copyLen = 32;
+        }
+        Util.arrayCopyNonAtomic(in, srcOff, out, (short) (outOff + (32 - copyLen)), copyLen);
     }
 
 }

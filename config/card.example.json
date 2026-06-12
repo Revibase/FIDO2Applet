@@ -1,0 +1,73 @@
+{
+  "_comment": "Copy to config/card.json and edit. Run: ./register_card.sh config/card.json. Resume state: config/card.json.provision-state.json",
+
+  "paths": {
+    "fido_cap": "build/javacard/FIDO2.cap",
+    "ndef_stub_cap": "applet-stub/build/javacard/openjavacard-ndef-stub.cap"
+  },
+
+  "aids": {
+    "fido_package": "A000000647",
+    "fido_applet": "A0000006472F0001",
+    "ndef_package": "D276000177100211020001",
+    "ndef_applet": "D2760000850101",
+    "ndef_service_id": "3F"
+  },
+
+  "gp": {
+    "executable": "gp",
+    "extra_args": [],
+    "reader": null,
+    "master_key": "0123456789ABCDEF0123456789ABCDEF",
+    "default_master_key": null,
+    "_default_master_key_comment": "Set to factory SCP key (often 404142434445464748494a4b4c4d4e4f) if not the gp default",
+    "card_lifecycle": {
+      "run_before_install": true,
+      "initialize": true,
+      "secure": true,
+      "lock": true
+    },
+    "delete_before_install": true,
+    "delete_package_aids": [
+      "A000000647",
+      "D276000177100211020001"
+    ]
+  },
+
+  "fido_install": {
+    "enable_attestation": true,
+    "only_allow_one_resident_credential": true,
+    "disable_pin_set": true,
+    "disable_reset": true,
+    "ndef_base_url": "https://revibase.com/verify"
+  },
+
+  "attestation": {
+    "name": "FIDO2Applet",
+    "org": "REVIBASE",
+    "country": "US",
+    "aaguid": null,
+    "ca_cert_bytes": null,
+    "ca_private_key": null
+  },
+
+  "make_credential": {
+    "rp": {
+      "id": "revibase.com",
+      "name": "Revi"
+    },
+    "user": {
+      "id_hex": "52657669",
+      "name": "Revi",
+      "display_name": "Revi"
+    },
+    "options": {
+      "rk": true
+    }
+  },
+
+  "verify": {
+    "check_ndef": true,
+    "expected_base_url": null
+  }
+}

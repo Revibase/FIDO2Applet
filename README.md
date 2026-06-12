@@ -31,10 +31,12 @@ You might be interested in [reading about the security model](docs/security_mode
    export JC_HOME=<path_to_your_jckit_directory>
    ```
 
-2. Build the JavaCard application, producing a `.cap` file for installation in `build/javacard`.
+2. Build the JavaCard applications, producing `.cap` files for installation:
     ```bash
-   ./gradlew buildJavaCard
+   ./gradlew buildJavaCard :applet-stub:buildJavaCard
     ```
+   FIDO2 CAP: `build/javacard/FIDO2.cap`  
+   NDEF stub CAP: `applet-stub/build/javacard/openjavacard-ndef-stub.cap`
 
 
 ## Testing the Application

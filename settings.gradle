@@ -1,2 +1,3 @@
 rootProject.name = "fido2applet"
+include("applet-stub")
 

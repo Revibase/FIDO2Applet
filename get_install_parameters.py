@@ -3,6 +3,8 @@
 import argparse
 import base64
 
+MAX_NDEF_BASE_URL_LEN = 96
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("get_install_parameters",
                                      description="Return parameters for installing FIDO2Applet with custom settings")
@@ -51,8 +53,12 @@ if __name__ == '__main__':
                         help="Prevent pins from being set on authenticator.", action='store_true', default=None),
     parser.add_argument('--disable-reset',
                         help="Prevent authenticator from being reset.", action='store_true', default=None),
-    parser.add_argument('--only-allow-one-account-per-rp-id',
-                        help="One account per rp id.", action='store_true', default=None)
+    parser.add_argument('--only-allow-one-resident-credential',
+                        help="Allow at most one discoverable credential for one RP ID and one account "
+                             "device-wide.", action='store_true', default=None)
+    parser.add_argument('--ndef-base-url',
+                        help="Base URL (ASCII) for the dynamic NDEF URI served via the stub NDEF applet backend.",
+                        default=None)
 
     args = parser.parse_args()
 
@@ -94,7 +100,8 @@ if __name__ == '__main__':
         'multiple_writes_per_pin_token',
         'disable_pin_set',
         'disable_reset',
-        'only_allow_one_account_per_rp_id'
+        'only_allow_one_resident_credential',
+        'ndef_base_url'
     ]):
         val = getattr(args, option_string)
         if val is None:
@@ -106,6 +113,15 @@ if __name__ == '__main__':
             bytes_for_option = [0xF5]
         elif val is False:
             bytes_for_option = [0xF4]
+        elif isinstance(val, str):
+            b = val.encode('utf-8')
+            if len(b) > MAX_NDEF_BASE_URL_LEN:
+                parser.error(f"NDEF base URL must be at most {MAX_NDEF_BASE_URL_LEN} bytes")
+            if len(b) <= 23:
+                bytes_for_option = [0x60 + len(b)]
+            else:
+                bytes_for_option = [0x78, len(b)]
+            bytes_for_option += [int(x) for x in b]
         elif isinstance(val, bytes):
             if len(val) <= 23:
                 bytes_for_option = [0x40 + len(val)]
