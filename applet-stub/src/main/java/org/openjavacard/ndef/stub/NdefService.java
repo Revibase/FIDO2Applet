@@ -19,6 +19,8 @@
 
 package org.openjavacard.ndef.stub;
 
-public interface NdefService {
+import javacard.framework.Shareable;
+
+public interface NdefService extends Shareable {
     byte[] getData();
 }

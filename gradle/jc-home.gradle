@@ -1,0 +1,34 @@
+ext {
+    resolveJcHome = {
+        def isValidSdk = { File dir ->
+            return dir.isDirectory()
+                    && new File(dir, "lib").isDirectory()
+                    && new File(dir, "api_export_files").isDirectory()
+        }
+
+        def env = System.getenv("JC_HOME")
+        if (env != null && !env.trim().isEmpty()) {
+            def dir = new File(env)
+            if (!dir.isAbsolute()) {
+                dir = rootProject.file(env)
+            }
+            if (isValidSdk(dir)) {
+                return dir.canonicalFile.absolutePath
+            }
+            logger.warn("JC_HOME is set to '${env}' but it is not a usable JavaCard SDK (expected lib/ and api_export_files/)")
+        }
+
+        def bundledCandidates = [
+                rootProject.file("jc304_kit"),
+                rootProject.file("sdks/jc304_kit"),
+        ]
+        for (def candidate : bundledCandidates) {
+            if (isValidSdk(candidate)) {
+                logger.lifecycle("Using JavaCard SDK at ${candidate.canonicalFile.absolutePath}")
+                return candidate.canonicalFile.absolutePath
+            }
+        }
+
+        return null
+    }
+}

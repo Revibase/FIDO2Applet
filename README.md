@@ -26,58 +26,85 @@ You might be interested in [reading about the security model](docs/security_mode
 
 ## Environment setup and building the application
 
-1. Configure the `JC_HOME` environment variable to point to a JavacardKit directory (optionally from the `sdks` submodule of this repository).
-   ```bash
-   export JC_HOME=<path_to_your_jckit_directory>
-   ```
+### JavaCard SDK
 
-2. Build the JavaCard applications, producing `.cap` files for installation:
-    ```bash
-   ./gradlew buildJavaCard :applet-stub:buildJavaCard
-    ```
-   FIDO2 CAP: `build/javacard/FIDO2.cap`  
-   NDEF stub CAP: `applet-stub/build/javacard/openjavacard-ndef-stub.cap`
+CAP builds need an Oracle **JavaCard 3.0.4** SDK (compiler + converter). Gradle picks one automatically, in this order:
 
+1. `JC_HOME` environment variable (if set and valid)
+2. `jc304_kit/` at the repo root
+3. `sdks/jc304_kit/` from the git submodule
+
+**If you already have `jc304_kit/` in the project root**, you are done — no submodule and no `JC_HOME` required.
+
+Otherwise, either place a kit at `jc304_kit/`, or initialize the submodule:
+
+```bash
+git submodule update --init sdks
+```
+
+To point at a specific kit explicitly:
+
+```bash
+export JC_HOME="$(pwd)/jc304_kit"          # or sdks/jc304_kit, or any other kit path
+```
+
+Use an **absolute** path, or a path **relative to the repo root** (e.g. `jc304_kit`). Do not set `JC_HOME` to a bare name like `jc304_kit` without a directory prefix — Gradle may resolve it incorrectly.
+
+### Build CAP files
+
+```bash
+./gradlew buildAllCaps
+```
+
+Or individually:
+
+```bash
+./gradlew buildJavaCard :applet-stub:buildJavaCard
+```
+
+Outputs:
+- FIDO2 CAP: `build/javacard/FIDO2.cap`
+- NDEF stub CAP: `applet-stub/build/javacard/openjavacard-ndef-stub.cap`
 
 ## Testing the Application
 
-### Overview
-You have multiple options for testing the JavaCard application:
+All tests (JUnit + ~200 Python CTAP tests on jcardsim) run with one command:
 
-1. **Actual Smartcard**: You can test on a physical smartcard.
-2. **Virtual SmartCard**: You can use VSmartCard and JCardSim for quicker and easier testing.
+```bash
+./gradlew testAll
+```
 
-### Detailed Steps for Virtual Testing
+**One-time setup** — Python dependencies for the CTAP suite:
 
-When running through VSmartCard and JCardSim, you can use
-tools like SoloKey's `fido2-tests` or other test suites.
-The `VSim` class in this repository might help you get started.
+```bash
+python3 -m venv venv
+./venv/bin/pip install -U -r requirements.txt
+```
 
-#### Python Tests
+Simulator tests compile applet source directly; they do not need `.cap` files. `testAll` runs JUnit first, builds the test JAR, then runs the full Python suite under `python_tests/`.
 
-Navigate to the `python_tests` directory, which contains Python-language tests, and:
+To also verify CAP builds (not a test, but useful before install):
 
-   ```bash
-   export JC_HOME=<your_jckit>
-   ./gradlew jar testJar
-   python -m venv venv
-   ./venv/bin/pip install -U -r requirements.txt
-   ./venv/bin/python -m unittest discover -s python_tests
-   ```
+```bash
+./gradlew testAll buildAllCaps
+```
 
-These tests use the Python `python-fido2` library because there 
-was, before FIDOk at the time this app was written, no FIDO2 client library
-for the JVM. You can also test with `libfido2`, Python libraries, or the
-official FIDO Standards Tests (Javascript).
+<details>
+<summary>Individual test targets (optional)</summary>
 
-By default, the Python tests use fast interprocess communication with the JVM,
-bypassing PC/SC. The tests take less than thirty seconds to run, for me, even
-though there are almost two hundred cases.
+| What | Command |
+|------|---------|
+| JUnit only | `./gradlew test` |
+| Python only | `./gradlew testJar && ./scripts/run_python_tests.sh` |
+| NDEF tests only | `./scripts/run_python_tests.sh python_tests.ctap.test_ndef python_tests.ctap.test_register_card_virtual` |
+| Virtual provisioning | `./gradlew buildAllCaps && ./register_card.sh config/card.json --virtual` |
+| Physical card | `./gradlew buildAllCaps && ./register_card.sh config/card.json` |
 
-#### Advanced Settings
+JUnit classes: `AppletBasicTest`, `NdefAppletTest`, `Base64UrlUtilTest` in `src/test/java/us/q3q/fido2/`.
 
-You can modify settings in `python_tests/ctap/ctap_test.py` to enable CTAP traffic logging,
-allow JVM remote debugging, or use a VSmartCard PC/SC connection instead of the default IPC.
+Advanced Python settings: `python_tests/ctap/ctap_test.py` (CTAP logging, JVM debug, PC/SC mode).
+
+</details>
 
 
 ## Contributing

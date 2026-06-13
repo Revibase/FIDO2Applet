@@ -24,22 +24,20 @@ public final class Base64UrlUtil {
         short i = 0;
         while (i < len) {
             final short remaining = (short) (len - i);
-            final int b0 = in[(short) (inOff + i)] & 0xFF;
+            final short b0 = (short) (in[(short) (inOff + i)] & 0xFF);
             if (remaining >= 3) {
-                final int b1 = in[(short) (inOff + i + 1)] & 0xFF;
-                final int b2 = in[(short) (inOff + i + 2)] & 0xFF;
-                final int triple = (b0 << 16) | (b1 << 8) | b2;
-                out[pos++] = ALPHABET[(triple >> 18) & 0x3F];
-                out[pos++] = ALPHABET[(triple >> 12) & 0x3F];
-                out[pos++] = ALPHABET[(triple >> 6) & 0x3F];
-                out[pos++] = ALPHABET[triple & 0x3F];
+                final short b1 = (short) (in[(short) (inOff + i + 1)] & 0xFF);
+                final short b2 = (short) (in[(short) (inOff + i + 2)] & 0xFF);
+                out[pos++] = ALPHABET[(b0 >> 2) & 0x3F];
+                out[pos++] = ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3F];
+                out[pos++] = ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3F];
+                out[pos++] = ALPHABET[b2 & 0x3F];
                 i = (short) (i + 3);
             } else if (remaining == 2) {
-                final int b1 = in[(short) (inOff + i + 1)] & 0xFF;
-                final int pair = (b0 << 8) | b1;
-                out[pos++] = ALPHABET[(pair >> 10) & 0x3F];
-                out[pos++] = ALPHABET[(pair >> 4) & 0x3F];
-                out[pos++] = ALPHABET[(pair << 2) & 0x3F];
+                final short b1 = (short) (in[(short) (inOff + i + 1)] & 0xFF);
+                out[pos++] = ALPHABET[(b0 >> 2) & 0x3F];
+                out[pos++] = ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3F];
+                out[pos++] = ALPHABET[(b1 << 2) & 0x3F];
                 i = (short) (i + 2);
             } else {
                 out[pos++] = ALPHABET[(b0 >> 2) & 0x3F];
