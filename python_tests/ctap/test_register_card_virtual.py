@@ -61,5 +61,3 @@ class RegisterCardVirtualTestCase(CTAPTestCase):
 
         uri = verify_signed_ndef_uri_virtual(self.transmit_apdu, base_url)
         self.assertTrue(uri.startswith(base_url))
-        for param in ("pk=", "c=", "n=", "s="):
-            self.assertIn(param, uri)

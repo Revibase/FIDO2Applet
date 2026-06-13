@@ -7,6 +7,7 @@ from .ndef_util import (
     parse_query_param,
     read_ndef_data_file,
     select_ndef_applet,
+    verify_signed_ndef_uri,
 )
 
 
@@ -48,8 +49,7 @@ class NdefSignedUrlTestCase(NdefTestCase):
         uri = self.read_ndef_uri()
         self.assertTrue(uri.startswith(self.BASE_URL), uri)
         self.assertIn("?", uri)
-        for param in ("pk=", "c=", "n=", "s="):
-            self.assertIn(param, uri)
+        verify_signed_ndef_uri(uri, self.BASE_URL)
 
     def test_counter_increments_on_each_read(self):
         self.basic_makecred_params["options"] = {"rk": True}
@@ -57,6 +57,8 @@ class NdefSignedUrlTestCase(NdefTestCase):
 
         uri1 = self.read_ndef_uri()
         uri2 = self.read_ndef_uri()
+        verify_signed_ndef_uri(uri1, self.BASE_URL)
+        verify_signed_ndef_uri(uri2, self.BASE_URL)
         counter1 = int(parse_query_param(uri1, "c"))
         counter2 = int(parse_query_param(uri2, "c"))
         self.assertGreater(counter2, counter1)

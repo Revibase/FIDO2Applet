@@ -47,7 +47,11 @@ from python_scripts.provision_state import (
 from python_scripts.virtual_provision import provision_virtual_card
 
 MAX_NDEF_BASE_URL_LEN = 96
-MASTER_KEY_HEX_RE = re.compile(r"^[0-9A-Fa-f]{32,64}$")
+# GlobalPlatformPro key: optional type prefix (emv:, mac:, …) + 16–32 byte hex
+MASTER_KEY_RE = re.compile(
+    r"^(?:(?:emv|mac|dek|enc|kek|rc|admin|psk):)?[0-9A-Fa-f]{32,64}$",
+    re.IGNORECASE,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -92,14 +96,16 @@ def validate_config(config: dict[str, Any]) -> None:
     lifecycle = gp_cfg.get("card_lifecycle", {})
     master_key = gp_cfg.get("master_key")
     if master_key is not None:
-        if not MASTER_KEY_HEX_RE.match(master_key):
+        if not MASTER_KEY_RE.match(master_key):
             raise ValueError(
-                "gp.master_key must be 16–32 bytes of hex (32–64 hex characters)"
+                "gp.master_key must be 16–32 bytes of hex (32–64 hex characters), "
+                "optionally prefixed for gp (e.g. emv:404142434445464748494a4b4c4d4e4f)"
             )
     default_key = gp_cfg.get("default_master_key")
-    if default_key is not None and not MASTER_KEY_HEX_RE.match(default_key):
+    if default_key is not None and not MASTER_KEY_RE.match(default_key):
         raise ValueError(
-            "gp.default_master_key must be 16–32 bytes of hex (32–64 hex characters)"
+            "gp.default_master_key must be 16–32 bytes of hex (32–64 hex characters), "
+            "optionally prefixed for gp (e.g. emv:404142434445464748494a4b4c4d4e4f)"
         )
     if lifecycle.get("lock") and lifecycle.get("run_before_install") and not master_key:
         raise ValueError("gp.master_key is required when card_lifecycle.lock is enabled")

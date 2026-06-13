@@ -17,9 +17,14 @@ cd "$SCRIPT_DIR"
 CONFIG="${1:-config/card.json}"
 shift || true
 
-PYTHON="${PYTHON:-python3}"
-if [[ -x "$SCRIPT_DIR/venv-x86/bin/python" ]]; then
-  PYTHON="$SCRIPT_DIR/venv-x86/bin/python"
+# shellcheck source=scripts/pick_python.sh
+source "$SCRIPT_DIR/scripts/pick_python.sh"
+pick_python "$SCRIPT_DIR"
+
+if ! "${PYTHON_LAUNCH[@]}" -c "import fido2" 2>/dev/null; then
+    echo "Python dependencies missing. Run once:" >&2
+    echo "  python3 -m venv venv && ./venv/bin/pip install -U -r requirements.txt" >&2
+    exit 1
 fi
 
-exec "$PYTHON" register_card.py "$CONFIG" "$@"
+exec "${PYTHON_LAUNCH[@]}" register_card.py "$CONFIG" "$@"

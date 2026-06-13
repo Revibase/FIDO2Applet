@@ -11,6 +11,7 @@ from smartcard.scard import SCARD_PROTOCOL_T0, SCARD_PROTOCOL_T1
 from python_tests.ctap.ndef_util import (
     parse_ndef_uri,
     read_ndef_data_file,
+    verify_signed_ndef_uri as verify_ndef_signature,
 )
 
 
@@ -70,9 +71,5 @@ def verify_signed_ndef_uri(
     reader_name: Optional[str] = None,
 ) -> str:
     uri = read_ndef_uri_from_pcsc(reader_name)
-    if not uri.startswith(base_url):
-        raise ValueError(f"NDEF URI does not start with {base_url!r}: {uri!r}")
-    for param in ("pk=", "c=", "n=", "s="):
-        if param not in uri:
-            raise ValueError(f"Missing query parameter {param!r} in {uri!r}")
+    verify_ndef_signature(uri, base_url)
     return uri

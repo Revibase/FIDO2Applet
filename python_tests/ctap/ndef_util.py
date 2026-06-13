@@ -1,7 +1,12 @@
+import base64
 import os
 import subprocess
 import sys
 from typing import Callable
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from .install_util import fido_install_params
 
@@ -98,3 +103,38 @@ def parse_query_param(uri: str, name: str) -> str:
         if part.startswith(prefix):
             return part[len(prefix):]
     raise ValueError(f"Missing query parameter {name!r} in {uri!r}")
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+
+def verify_signed_ndef_uri(uri: str, base_url: str | None = None) -> None:
+    """Verify NDEF signed URL: ECDSA P-256 SHA-256 over counter||nonce."""
+    if base_url is not None and not uri.startswith(base_url):
+        raise ValueError(f"NDEF URI does not start with {base_url!r}: {uri!r}")
+
+    compressed_pk = b64url_decode(parse_query_param(uri, "pk"))
+    if len(compressed_pk) != 33:
+        raise ValueError(f"pk must be 33-byte compressed P-256 key, got {len(compressed_pk)} bytes")
+
+    nonce = b64url_decode(parse_query_param(uri, "n"))
+    if len(nonce) != 8:
+        raise ValueError(f"n must be 8 bytes, got {len(nonce)} bytes")
+
+    raw_sig = b64url_decode(parse_query_param(uri, "s"))
+    if len(raw_sig) != 64:
+        raise ValueError(f"s must be 64-byte raw ECDSA signature, got {len(raw_sig)} bytes")
+
+    counter = int(parse_query_param(uri, "c"))
+    if counter < 0 or counter > 0xFFFFFFFF:
+        raise ValueError(f"counter out of uint32 range: {counter}")
+
+    message = counter.to_bytes(4, "big") + nonce
+    public_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), compressed_pk)
+    der_sig = encode_dss_signature(
+        int.from_bytes(raw_sig[:32], "big"),
+        int.from_bytes(raw_sig[32:], "big"),
+    )
+    public_key.verify(der_sig, message, ec.ECDSA(hashes.SHA256()))

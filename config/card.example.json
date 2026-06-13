@@ -18,9 +18,9 @@
     "executable": "gp",
     "extra_args": [],
     "reader": null,
-    "master_key": "0123456789ABCDEF0123456789ABCDEF",
+    "master_key": "emv:0123456789ABCDEF0123456789ABCDEF",
     "default_master_key": null,
-    "_default_master_key_comment": "Set to factory SCP key (often 404142434445464748494a4b4c4d4e4f) if not the gp default",
+    "_default_master_key_comment": "Factory SCP key before --lock, if non-default (e.g. emv:404142434445464748494a4b4c4d4e4f)",
     "card_lifecycle": {
       "run_before_install": true,
       "initialize": true,

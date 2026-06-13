@@ -27,7 +27,7 @@ from python_scripts.provision_state import (
     attestation_extras_from_result,
 )
 from python_tests.ctap.ctap_test import CommandType, FakeSCConnection, JCardSimTestCase
-from python_tests.ctap.ndef_util import parse_ndef_uri, read_ndef_data_file
+from python_tests.ctap.ndef_util import parse_ndef_uri, read_ndef_data_file, verify_signed_ndef_uri
 
 
 class VirtualCardSession:
@@ -97,11 +97,7 @@ def verify_signed_ndef_uri_virtual(
     base_url: str,
 ) -> str:
     uri = parse_ndef_uri(read_ndef_data_file(transmit))
-    if not uri.startswith(base_url):
-        raise ValueError(f"NDEF URI does not start with {base_url!r}: {uri!r}")
-    for param in ("pk=", "c=", "n=", "s="):
-        if param not in uri:
-            raise ValueError(f"Missing query parameter {param!r} in {uri!r}")
+    verify_signed_ndef_uri(uri, base_url)
     return uri
 
 

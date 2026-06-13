@@ -68,7 +68,9 @@ When provisioning a **new** blank card, set `gp.card_lifecycle.run_before_instal
 2. **`gp --secure-card`** — ISD to SECURED state  
 3. **`gp --lock <MASTER_KEY>`** — replace the factory SCP key with your `gp.master_key`
 
-Lifecycle commands authenticate with `gp.default_master_key` if set, otherwise GlobalPlatformPro’s factory default. All subsequent `gp` steps (delete, install) use `-k <MASTER_KEY>`.
+Keys use [GlobalPlatformPro syntax](https://github.com/martinpaljak/GlobalPlatformPro/wiki/Keys): prefix the hex value with a type, usually **`emv:`** for the SCP master key (e.g. `emv:404142434445464748494a4b4c4d4e4f`). Plain hex still works.
+
+Lifecycle commands authenticate with `gp.default_master_key` if set, otherwise GlobalPlatformPro’s factory default. All subsequent `gp` steps (delete, install) use `-k <MASTER_KEY>` (same `emv:…` format).
 
 For a card that is **already locked** with your key, set `run_before_install` to `false` and keep `gp.master_key` set so every `gp` invocation passes `-k`.
 

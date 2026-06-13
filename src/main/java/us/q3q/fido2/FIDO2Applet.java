@@ -83,15 +83,25 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
     private short ndefBaseUrlLen;
     /**
      * Scratch for crypto and URL assembly during NDEF generation.
+     * Uses CLEAR_ON_RESET so signing works when invoked via Shareable while the
+     * FIDO applet is not the selected applet (NDEF stub holds selection).
      */
     private byte[] ndefWorkBuffer;
+    private byte[] ndefSignMsg;
+    private byte[] ndefDerSigBuf;
+    private byte[] ndefRawSigBuf;
     /**
      * Shareable service ID for the NDEF stub applet ({@code applet-stub/}).
      */
     private static final byte NDEF_SERVICE_ID = (byte) 0x3F;
+    /** NFC Forum Type 4 Tag application AID ({@code D2760000850101}). */
+    private static final byte[] NDEF_CLIENT_AID = {
+            (byte) 0xD2, (byte) 0x76, 0x00, 0x00, (byte) 0x85, 0x01, 0x01
+    };
     private static final short NDEF_NONCE_LEN = 8;
     private static final short COMPRESSED_PUBKEY_LEN = 33;
     private static final short NDEF_RAW_SIG_LEN = 64;
+    private static final short NDEF_DER_SIG_SCRATCH_LEN = 80;
     /** Worst-case signed query length: {@code ?pk=..&c=4294967295&n=..&s=..}. */
     private static final short NDEF_MAX_QUERY_LEN = 166;
     /** Max install-time base URL length (includes {@code https://}). */
@@ -7391,7 +7401,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
 
         transientStorage = new TransientStorage();
 
-        ndefWorkBuffer = JCSystem.makeTransientByteArray(NDEF_WORK_BUF_SIZE, JCSystem.CLEAR_ON_DESELECT);
+        ndefWorkBuffer = JCSystem.makeTransientByteArray(NDEF_WORK_BUF_SIZE, JCSystem.CLEAR_ON_RESET);
+        ndefSignMsg = JCSystem.makeTransientByteArray((short) 12, JCSystem.CLEAR_ON_RESET);
+        ndefDerSigBuf = JCSystem.makeTransientByteArray(NDEF_DER_SIG_SCRATCH_LEN, JCSystem.CLEAR_ON_RESET);
+        ndefRawSigBuf = JCSystem.makeTransientByteArray(NDEF_RAW_SIG_LEN, JCSystem.CLEAR_ON_RESET);
 
         final short availableMem = JCSystem.getAvailableMemory(JCSystem.MEMORY_TYPE_TRANSIENT_DESELECT);
 
@@ -7425,7 +7438,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
         // RAM usage - (ideally) ephemeral keys
         ecKeyPair = new KeyPair(
                 (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, KeyBuilder.LENGTH_EC_FP_256, false),
-                getECPrivKey(ecPairInRam, true));
+                getECPrivKey(ecPairInRam, false));
         P256Constants.setCurve((ECKey) ecKeyPair.getPrivate());
         P256Constants.setCurve((ECKey) ecKeyPair.getPublic());
     }
@@ -7703,10 +7716,17 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
      * Provides the NDEF stub applet with a shareable dynamic-tag backend.
      */
     public Shareable getShareableInterfaceObject(AID clientAID, byte parameter) {
-        if (parameter == NDEF_SERVICE_ID) {
+        if (parameter == NDEF_SERVICE_ID && isAuthorizedNdefClient(clientAID)) {
             return this;
         }
         return null;
+    }
+
+    private boolean isAuthorizedNdefClient(AID clientAID) {
+        if (clientAID == null) {
+            return false;
+        }
+        return clientAID.partialEquals(NDEF_CLIENT_AID, (short) 0, (byte) NDEF_CLIENT_AID.length);
     }
 
     /**
@@ -7722,7 +7742,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
         final short counterOff = (short) 97;
         final short nonceOff = (short) 101;
         final short credScratchOff = (short) 109;
-        final short sigOff = (short) 189;
 
         residentKeys[0].unpackPublicKey(ndefWorkBuffer, pubXYOff);
         compressSecp256r1PublicKey(ndefWorkBuffer, pubXYOff, ndefWorkBuffer, compressedOff);
@@ -7737,15 +7756,24 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
                 ndefWorkBuffer, credScratchOff, (short) 0);
         loadScratchIntoAttester(ndefWorkBuffer, (short) (credScratchOff + RP_HASH_LEN));
 
-        final short sigLen = attester.sign(ndefWorkBuffer, counterOff, (short) 12,
-                ndefWorkBuffer, sigOff);
-        ecKeyPair.getPrivate().clearKey();
-        normalizeDerSigToRaw64(ndefWorkBuffer, sigOff, sigLen, ndefWorkBuffer, sigOff);
+        Util.arrayCopyNonAtomic(ndefWorkBuffer, counterOff, ndefSignMsg, (short) 0, (short) 12);
 
-        return buildSignedNdefDataFile(ndefWorkBuffer, compressedOff,
+        final short sigLen = attester.sign(ndefSignMsg, (short) 0, (short) 12,
+                ndefDerSigBuf, (short) 0);
+        ecKeyPair.getPrivate().clearKey();
+        normalizeDerSigToRaw64(ndefDerSigBuf, (short) 0, sigLen, ndefRawSigBuf, (short) 0);
+
+        final byte[] file = buildSignedNdefDataFile(ndefWorkBuffer, compressedOff,
                 ndefWorkBuffer, counterOff,
                 ndefWorkBuffer, nonceOff,
-                ndefWorkBuffer, sigOff);
+                ndefRawSigBuf, (short) 0);
+
+        Util.arrayFillNonAtomic(ndefWorkBuffer, (short) 0, NDEF_WORK_BUF_SIZE, (byte) 0);
+        Util.arrayFillNonAtomic(ndefSignMsg, (short) 0, (short) 12, (byte) 0);
+        Util.arrayFillNonAtomic(ndefDerSigBuf, (short) 0, NDEF_DER_SIG_SCRATCH_LEN, (byte) 0);
+        Util.arrayFillNonAtomic(ndefRawSigBuf, (short) 0, NDEF_RAW_SIG_LEN, (byte) 0);
+
+        return file;
     }
 
     private short parseNdefBaseUrlInstallParam(byte[] array, short offset) {
@@ -7854,7 +7882,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
 
         final short ndefMsgLen = (short) (4 + ndefPayloadLen);
         final short fileLen = (short) (2 + ndefMsgLen);
-        final byte[] file = JCSystem.makeTransientByteArray(fileLen, JCSystem.CLEAR_ON_DESELECT);
+        final byte[] file = new byte[fileLen];
         Util.setShort(file, (short) 0, ndefMsgLen);
         file[2] = (byte) 0xD1;
         file[3] = 0x01;
@@ -7886,34 +7914,35 @@ public final class FIDO2Applet extends Applet implements ExtendedLength, NdefSer
 
     private void normalizeDerSigToRaw64(byte[] sig, short sigOff, short sigLen,
             byte[] out, short outOff) {
+        if (sigLen >= 8 && sig[sigOff] == 0x30) {
+            short pos = (short) (sigOff + 2);
+            if (sig[(short) (sigOff + 1)] == 0x81) {
+                pos = (short) (sigOff + 3);
+            }
+            if (sig[pos++] != 0x02) {
+                ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+            }
+            short rLen = (short) (sig[pos++] & 0xFF);
+            final short rStart = pos;
+            pos = (short) (pos + rLen);
+            if (sig[pos++] != 0x02) {
+                ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+            }
+            short sLen = (short) (sig[pos++] & 0xFF);
+            final short sStart = pos;
+
+            Util.arrayFillNonAtomic(out, outOff, NDEF_RAW_SIG_LEN, (byte) 0);
+            copyDerFieldToRaw32(sig, rStart, rLen, out, outOff);
+            copyDerFieldToRaw32(sig, sStart, sLen, out, (short) (outOff + 32));
+            return;
+        }
         if (sigLen == NDEF_RAW_SIG_LEN) {
             if (sigOff != outOff) {
                 Util.arrayCopyNonAtomic(sig, sigOff, out, outOff, NDEF_RAW_SIG_LEN);
             }
             return;
         }
-        if (sigLen < 8 || sig[sigOff] != 0x30) {
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        short pos = (short) (sigOff + 2);
-        if (sig[(short) (sigOff + 1)] == 0x81) {
-            pos = (short) (sigOff + 3);
-        }
-        if (sig[pos++] != 0x02) {
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        short rLen = (short) (sig[pos++] & 0xFF);
-        final short rStart = pos;
-        pos = (short) (pos + rLen);
-        if (sig[pos++] != 0x02) {
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        short sLen = (short) (sig[pos++] & 0xFF);
-        final short sStart = pos;
-
-        Util.arrayFillNonAtomic(out, outOff, NDEF_RAW_SIG_LEN, (byte) 0);
-        copyDerFieldToRaw32(sig, rStart, rLen, out, outOff);
-        copyDerFieldToRaw32(sig, sStart, sLen, out, (short) (outOff + 32));
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
     private void copyDerFieldToRaw32(byte[] in, short inOff, short inLen, byte[] out, short outOff) {
