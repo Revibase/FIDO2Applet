@@ -1,0 +1,52 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url "https://javacard.pro/maven" }
+    }
+}
+
+plugins {
+    id("java")
+    id("com.klinec.gradle.javacard") version "1.8.0" apply false
+}
+
+apply from: rootProject.file("gradle/jc-home.gradle")
+
+def jcHome = rootProject.ext.resolveJcHome()
+def jcHomeSet = jcHome != null
+if (!jcHomeSet) {
+    project.logger.warn("No JavaCard SDK found - set JC_HOME or initialize the sdks submodule (sdks/jc305u4_kit)")
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    if (jcHomeSet) {
+        compileOnly(group: 'com.klinec', name: 'jcardsim', version: '3.0.6.0') {
+            exclude group: 'oracle.javacard', module: 'api_classic'
+        }
+    } else {
+        implementation(group: 'com.klinec', name: 'jcardsim', version: '3.0.6.0')
+    }
+}
+
+if (jcHomeSet) {
+    apply plugin: "com.klinec.gradle.javacard"
+    javacard {
+        config {
+            jckit jcHome
+            cap {
+                packageName 'org.openjavacard.ndef.stub'
+                version '0.1'
+                aid 'D276000177100211020001'
+                output 'openjavacard-ndef-stub.cap'
+                applet {
+                    className 'org.openjavacard.ndef.stub.NdefApplet'
+                    aid 'D27600017710021102000101'
+                }
+            }
+        }
+    }
+}

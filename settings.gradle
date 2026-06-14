@@ -1,3 +1,2 @@
 rootProject.name = "fido2applet"
-include("applet-stub")
-
+include("applets:fido2", "applets:ndef")

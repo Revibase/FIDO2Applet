@@ -1,220 +1,204 @@
-# FIDO2 CTAP2 Javacard Applet
+# CTAP-like + NDEF JavaCard Authenticator
 
-## Overview
+## Important: not FIDO-compliant
 
-This repository contains sources for a feature-rich, FIDO2 CTAP2.1
-compatible applet targeting the Javacard Classic system, version 3.0.4. In a
-nutshell, this lets you take a smartcard, install an app onto it,
-and have it work as a FIDO2 authenticator device with a variety of
-features. You can generate and use OpenSSH `ecdsa-sk` type keys, including
-ones you carry with you on the key (`-O resident`). You can securely unlock
-a LUKS encrypted disk with `systemd-cryptenroll`. You can log in to a Linux
-system locally with [pam-u2f](https://github.com/Yubico/pam-u2f).
+> This project **is not FIDO Alliance certified** and **does not implement a complete, standards-conformant FIDO2/WebAuthn authenticator**.
+>
+> It **reuses CTAP-like command framing** (`makeCredential`, `getAssertion`, `getInfo`) for host integration convenience, but omits required FIDO features (PIN, U2F, credential management, full attestation model, and more) and may deviate from spec error handling and CBOR requirements.
+>
+> **Do not** deploy it where FIDO compliance, WebAuthn certification, or passkey interoperability is required without independent review.
+>
+> The NDEF path is a **custom signed-URL scheme**, not part of the FIDO or NFC Forum security model for authentication.
 
-100% of the FIDO2 CTAP2.1 spec is covered, with the exception of features
-that aren't physically on an ordinary smartcard, such as biometrics or
-other on-board user verification. The implementation in the default configuration
-passes the official FIDO certification test suite version 1.7.17 in
-"CTAP2.1 full feature profile" mode. Some CTAP 2.2+ features are also supported.
+## What this is
 
-In order to run this outside a simulator, you will need
-[a compatible smartcard](docs/requirements.md). Some smartcards which
-describe themselves as running Javacard 3.0.1 also work - see the
-detailed requirements.
+This repository ships **two co-installed JavaCard applets** for JavaCard Classic 3.0.4+:
 
-You might be interested in [reading about the security model](docs/security_model.md).
+- [`applets/fido2/`](applets/fido2/) — CTAP-like signing over contact APDUs (PC/SC)
+- [`applets/ndef/`](applets/ndef/) — passive NFC Type 4 tag that serves **dynamic signed HTTPS URLs**
 
-## Environment setup and building the application
+The code is forked from the open-source [FIDO2Applet](https://github.com/BryanJacobs/FIDO2Applet) lineage and modified for a specific purpose: **generate a secp256r1 (P-256) private key on-card and use it to sign**. The same key is shared between both applets via the shareable [`NdefKeyStore`](applets/ndef/src/main/java/org/openjavacard/ndef/stub/NdefKeyStore.java) interface.
 
-### JavaCard SDK
+This is a **custom signing appliance**, not a general-purpose security key or passkey token.
 
-CAP builds need an Oracle **JavaCard 3.0.4** SDK (compiler + converter). Gradle picks one automatically, in this order:
+## How it works (two interfaces, one key)
 
-1. `JC_HOME` environment variable (if set and valid)
-2. `jc304_kit/` at the repo root
-3. `sdks/jc304_kit/` from the git submodule
-
-**If you already have `jc304_kit/` in the project root**, you are done — no submodule and no `JC_HOME` required.
-
-Otherwise, either place a kit at `jc304_kit/`, or initialize the submodule:
-
-```bash
-git submodule update --init sdks
+```mermaid
+flowchart LR
+  subgraph host [Host]
+    Client["CTAP client / PC/SC"]
+    Phone["Phone NFC stack"]
+  end
+  subgraph card [JavaCard]
+    FidoApplet["FIDO2 applet\nCTAP-like APDUs"]
+    NdefApplet["NDEF applet\nType 4 read path"]
+    KeyStore["NdefKeyStore\nP-256 signing key"]
+  end
+  Client -->|"makeCredential / getAssertion"| FidoApplet
+  FidoApplet -->|"stores key on makeCredential"| KeyStore
+  Phone -->|"SELECT → CC → READ NDEF"| NdefApplet
+  NdefApplet -->|"signs URL with same key"| KeyStore
 ```
 
-To point at a specific kit explicitly:
+**CTAP-like path (contact / PC/SC)**
 
-```bash
-export JC_HOME="$(pwd)/jc304_kit"          # or sdks/jc304_kit, or any other kit path
-```
+- The host sends CTAP-framed commands over APDUs.
+- On `makeCredential`, the FIDO applet generates a **resident credential** with an **ECDSA P-256 key pair on-card** and pushes the signing key to the NDEF applet.
+- On `getAssertion`, the same key signs challenge material returned to the host.
+- The private key **never leaves the card**; hosts only receive signatures and public key material.
 
-Use an **absolute** path, or a path **relative to the repo root** (e.g. `jc304_kit`). Do not set `JC_HOME` to a bare name like `jc304_kit` without a directory prefix — Gradle may resolve it incorrectly.
+**NDEF path (contactless / tap)**
 
-### Build CAP files
+- A phone reads the tag with the standard Type 4 procedure (SELECT NDEF AID → capability container → NDEF file → READ).
+- On each read session, the NDEF applet builds a **dynamic HTTPS URL**: your configured base URL plus query parameters (`pk`, `n`, `c`, `s`) where `s` is an ECDSA signature over `(counter || nonce)` using the **same P-256 key** provisioned during `makeCredential`.
+- Your verifier checks the signed URL server-side — no CTAP session is required over NFC.
 
-```bash
-./gradlew buildAllCaps
-```
+Until `makeCredential` has run with a resident key (`rk: true`), the NDEF applet may serve a placeholder URL.
 
-Or individually:
+## Register a new JavaCard
 
-```bash
-./gradlew buildJavaCard :applet-stub:buildJavaCard
-```
+### Prerequisites
 
-Outputs:
-- FIDO2 CAP: `build/javacard/FIDO2.cap`
-- NDEF stub CAP: `applet-stub/build/javacard/openjavacard-ndef-stub.cap`
-
-## Testing the Application
-
-All tests (JUnit + ~200 Python CTAP tests on jcardsim) run with one command:
-
-```bash
-./gradlew testAll
-```
-
-**One-time setup** — Python dependencies for the CTAP suite:
+- **JavaCard SDK** (3.0.4+): `git submodule update --init sdks`
+- **Built CAP files**: `./gradlew buildAllCaps` (requires `JC_HOME` or the bundled SDK under `sdks/`)
+- **[GlobalPlatformPro](https://github.com/martinpaljak/GlobalPlatformPro)** (`gp`) on your `PATH`
+- **PC/SC reader** with `pcscd` running; your user must be allowed to access the reader
+- **Python venv** with dependencies from `requirements.txt` (same setup as `./gradlew testAll`):
 
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install -U -r requirements.txt
 ```
 
-Simulator tests compile applet source directly; they do not need `.cap` files. `testAll` runs JUnit first, builds the test JAR, then runs the full Python suite under `python_tests/`.
-
-To also verify CAP builds (not a test, but useful before install):
+### 1. Configure
 
 ```bash
-./gradlew testAll buildAllCaps
+cp config/card.example.json config/card.json
+# Edit config/card.json before provisioning
 ```
+
+| Field | Purpose |
+|-------|---------|
+| `ndef_install.base_url` | HTTPS prefix for signed tap URLs (e.g. `https://your.server/verify`) |
+| `gp.master_key` | SCP key used after `--lock` ([GlobalPlatformPro key syntax](https://github.com/martinpaljak/GlobalPlatformPro/wiki/Keys), usually `emv:…` hex) |
+| `gp.card_lifecycle` | Set `run_before_install: true` on a **blank** card to initialize → secure → lock before install |
+| `make_credential` | RP and user for the resident credential that wires the signing key to NDEF |
+| `paths.fido_cap` / `paths.ndef_stub_cap` | CAP file paths (defaults match this repo layout) |
+
+Keep `config/card.json` out of version control — it contains your `master_key`. Resume state is written to `config/card.json.provision-state.json` (also gitignored).
+
+For a card **already locked** with your key, set `gp.card_lifecycle.run_before_install` to `false` and keep `gp.master_key` set so every `gp` invocation passes `-k`.
+
+### 2. Provision
+
+```bash
+./register_card.sh config/card.json              # physical card
+./register_card.sh config/card.json --dry-run    # print steps only
+./register_card.sh config/card.json --virtual    # jcardsim smoke test (no reader)
+```
+
+The registration script performs these steps in order:
+
+1. Optional card lifecycle (`--initialize-card`, `--secure-card`, `--lock`) for new blank cards
+2. Delete existing FIDO/NDEF packages (when configured)
+3. Install **NDEF applet first** — FIDO2 imports the NDEF package `.exp` and must load second
+4. Install FIDO2 applet with CBOR install parameters from `fido_install`
+5. Load attestation certificate via CTAP vendor command `0x46` (optional; skip if not needed)
+6. `makeCredential` with `rk: true` — creates the on-card signing key **and** provisions NDEF
+7. Optionally read and verify the NDEF signed URL over PC/SC
+
+**Resume / retry**
+
+```bash
+./register_card.sh config/card.json --status
+./register_card.sh config/card.json --fresh
+./register_card.sh config/card.json --from-step install_fido
+./register_card.sh config/card.json --list-steps
+```
+
+**Troubleshooting**
+
+- **`0x6985` on FIDO2 LOAD** — NDEF must be installed before `FIDO2.cap`. The script installs NDEF first; if a prior run failed mid-way, delete the partial package and retry: `gp -k emv:YOUR_KEY --delete A000000647 --force` then `./register_card.sh config/card.json --from-step install_ndef`.
+- **NDEF shows placeholder URL** — run step 6 (`makeCredential` with `rk: true`) before expecting a signed URL on tap.
+- **Insufficient EEPROM** — lower `fido_install` buffer sizes in config or use a larger card; see NDEF + FIDO2 combined footprint in [`applets/ndef/README.md`](applets/ndef/README.md).
+
+## Build CAP files
+
+CAP builds need an Oracle **JavaCard 3.0.4** SDK. Gradle resolves one automatically from `sdks/` or `JC_HOME`.
+
+```bash
+git submodule update --init sdks
+./gradlew buildAllCaps
+```
+
+Or individually:
+
+```bash
+./gradlew :applets:fido2:buildJavaCard :applets:ndef:buildJavaCard
+```
+
+Outputs:
+
+- FIDO2 CAP: `applets/fido2/build/javacard/FIDO2.cap`
+- NDEF CAP: `applets/ndef/build/javacard/openjavacard-ndef-stub.cap`
+
+Install parameters for the FIDO applet can be generated with [`tools/get_install_parameters.py`](tools/get_install_parameters.py) (`--help` lists options).
+
+## Testing
+
+All tests (JUnit + Python integration on jcardsim) run with one command:
+
+```bash
+./gradlew testAll
+```
+
+If `./gradlew testAll` fails with `_cffi_backend` / “incompatible architecture”, Gradle is likely running as x86_64 under Rosetta. Create an x86_64 venv:
+
+```bash
+arch -x86_64 python3 -m venv venv-x86
+arch -x86_64 ./venv-x86/bin/pip install -U -r requirements.txt
+```
+
+Simulator tests compile applet source directly; they do not need `.cap` files.
 
 <details>
 <summary>Individual test targets (optional)</summary>
 
 | What | Command |
 |------|---------|
-| JUnit only | `./gradlew test` |
-| Python only | `./gradlew testJar && ./scripts/run_python_tests.sh` |
-| NDEF tests only | `./scripts/run_python_tests.sh python_tests.ctap.test_ndef python_tests.ctap.test_register_card_virtual` |
-| Virtual provisioning | `./gradlew buildAllCaps && ./register_card.sh config/card.json --virtual` |
+| JUnit only | `./gradlew :applets:fido2:test` |
+| Python only | `./gradlew :applets:fido2:testJar && ./scripts/run_python_tests.sh` |
+| NDEF integration | `./scripts/run_python_tests.sh ctap.test_ndef test_ndef_uri_encoding` |
+| Virtual provisioning | `./gradlew buildAllCaps :applets:fido2:testJar && ./register_card.sh config/card.example.json --virtual` |
 | Physical card | `./gradlew buildAllCaps && ./register_card.sh config/card.json` |
-
-JUnit classes: `AppletBasicTest`, `NdefAppletTest`, `Base64UrlUtilTest` in `src/test/java/us/q3q/fido2/`.
-
-Advanced Python settings: `python_tests/ctap/ctap_test.py` (CTAP logging, JVM debug, PC/SC mode).
 
 </details>
 
+## Capabilities
+
+- On-card **secp256r1** key generation (resident credential, `rk: true` required)
+- CTAP-like **`makeCredential` / `getAssertion` / `getInfo`** (subset only; not FIDO-compliant)
+- **NDEF Type 4** dynamic signed URL on passive NFC read
+- Optional attestation cert load via vendor command **`0x46`**
+- Extended APDUs and GET RESPONSE chaining
+
+Tested on NXP JCOP3/JCOP4 and jcardsim. The NFC tap path follows the standard Type 4 read procedure (SELECT → CC → NDEF file → READ).
+
+## Security and EEPROM wear
+
+See [`docs/applet_security_audit.md`](docs/applet_security_audit.md) for the full audit. Summary:
+
+- **NDEF URL counter** uses the same wear-leveled `SigOpCounter` scheme as FIDO2 (batched EEPROM writes, ~10 taps per flush). Counter values may skip after power loss — acceptable for URL nonces.
+- **Signing keys** are AES-wrapped in EEPROM; Shareable push stages key material in **transient RAM** only, then encrypts in one transaction on first NDEF use.
+- **Secret comparisons** (HMAC tags, RP hash) use constant-time `SecureCompare` where feasible; full CTAP constant-time is not achievable on JavaCard.
+- **RAM-first buffers**: FIDO install defaults prefer transient memory. If the card falls back to flash scratch (`buffer_mem` / `flash_scratch`), heavy CTAP traffic rewrites the same EEPROM cells — tune sizes with `tools/get_install_parameters.py` only after `./gradlew testAll` passes with your attestation chain.
+- **No PIN / user verification**: physical possession of the card allows signing. Side-channel resistance depends on the JCOP firmware, not this applet alone.
+- **Single-lifetime keys**: exactly one resident credential and one NDEF signing key per card lifetime; no overwrite or delete (reinstall CAPs to reset).
+
+## Repository layout
+
+See [`docs/repo_layout.md`](docs/repo_layout.md) for the monorepo directory map, dependency rules, and artifact paths.
 
 ## Contributing
 
-If you wish to contribute to the project, feel free to raise a pull request or open an issue.
-
-## Where to go Next
-
-If you just want to install the app, look at [what you can configure](docs/installation.md).
-
-I suggest [reading the FAQ](docs/FAQ.md) and perhaps [the security model](docs/security_model.md).
-
-If you're a really detail-oriented person, you might enjoy reading
-[about the implementation](docs/implementation.md).
-
-## Implementation Status
-
-| Feature                             | Status                                                |
-|-------------------------------------|-------------------------------------------------------|
-| CTAP1/U2F                           | Implemented (see [install guide](docs/certs.md))      |
-| CTAP2.0 core                        | Implemented                                           |
-| CTAP2.1 core                        | Implemented                                           |
-| Resident keys / Discoverable creds  | Implemented                                           |
-| User Presence                       | User always considered present: one verification only |
-| ECDSA (SecP256r1)                   | Implemented                                           |
-| Other crypto, like ed25519          | Not implemented - availability depends on hardware    |
-| Self attestation                    | Implemented                                           |
-| Basic attestation with ECDSA certs  | Implemented (see [install guide](docs/certs.md))      |
-| Webauthn (NOT CTAP!) uvm extension  | Implemented                                           |
-| Webauthn devicePubKey extension     | Not implemented                                       |
-| CTAP2.1 hmac-secret extension       | Implemented                                           |
-| CTAP2.2 hmac-secret-mc extension    | Not implemented                                       |
-| CTAP2.1 alwaysUv option             | Implemented                                           |
-| CTAP2.1 credProtect option          | Implemented                                           |
-| CTAP2.1 PIN Protocol 1              | Implemented                                           |
-| CTAP2.1 PIN Protocol 2              | Implemented                                           |
-| CTAP2.1 credential management       | Implemented                                           |
-| CTAP2.1 enterprise attestation      | Implemented in code, disabled                         |
-| CTAP2.1 PIN complexity policies     | Not implemented (min length is supported though)      |
-| CTAP2.1 authenticator config        | Implemented                                           |
-| CTAP2.1 minPinLength extension      | Implemented, default max two RPIDs can receive        |
-| CTAP2.1 credBlob extension          | Implemented, discoverable creds only                  |
-| CTAP2.1 largeBlobKey extension      | Implemented                                           |
-| CTAP2.1 authenticatorLargeBlobs     | Implemented, default 1024 bytes storage (max 4k)      |
-| CTAP2.1 bio-stuff                   | Not implemented (doesn't make sense in this context?) |
-| CTAP2.2 thirdPartyPayment extension | Not implemented                                       |
-| CTAP2.2 persistent UV token         | Not implemented                                       |
-| CTAP2.2 encIdentifier               | Not implemented                                       |
-| CTAP2.2 uvCountSinceLastPinEntry    | Not implemented                                       |
-| CTAP2.3 long touch for reset        | Not implemented (doesn't make sense in this context)  |
-| CTAP2.2/2.3 hybrid authenticator    | Not implemented (doesn't make sense in this context)  |
-| Key backups                         | Not implemented                                       |
-| APDU chaining                       | Supported                                             |
-| Extended APDUs                      | Supported                                             |
-| Performance                         | Adequate (sub-3-second common operations)             |
-| Resource consumption                | Reasonably optimized for avoiding flash wear          |
-| Bugs                                | Probably? Many have been fixed. Appears to work OK.   |
-| Code quality                        | No                                                    |
-| Security                            | Theoretical, but see "bugs" row above                 |
-
-## Software Compatibility
-
-| Platform                  | Status           |
-|---------------------------|------------------|
-| Android (Google Play)     | CTAP1 only [1]   |
-| Android (hwsecurity)      | Working          |
-| Android (MicroG)          | Working          |
-| Android (FIDOk)           | Working          |
-| iOS                       | Reported working |
-| Linux (libfido2)          | Working          |
-| Linux (FIDOk)             | Working          |
-| Windows 10                | Working          |
-
-| Smartcard                                                                         | Status           |
-|-----------------------------------------------------------------------------------|------------------|
-| J3H145 (NXP JCOP3)                                                                | Working          |
-| J3R180 (NXP JCOP4)                                                                | Working          |
-| OMNI Ring (Infineon SLE78)                                                        | Working          |
-| jCardSim                                                                          | Working          |
-| [Vivokey FlexSecure (NXP JCOP4)](https://dangerousthings.com/product/flexsecure/) | Working          |
-| A40CR                                                                             | Reported Working |
-
-| Application         | Status                         |
-|---------------------|--------------------------------|
-| Chrome on Android   | CTAP1 Only (Play Services [1]) |
-| Chrome on Linux     | Working, USBHID only [2]       |
-| Chrome on Windows   | Working                        |
-| Fennec on Android   | CTAP1 Only (Play Services [1]) |
-| WebView on Android  | Working                        |
-| Firefox on Linux    | Working, USBHID only [2]       |
-| Firefox on Windows  | Working                        |
-| MS Edge on Windows  | Working                        |
-| Safari on iOS       | Reported working               |
-| OpenSSH             | Working                        |
-| pam_u2f             | Working                        |
-| systemd-cryptenroll | Working                        |
-| python-fido2        | Working                        |
-| FIDOk               | Working                        |
-
-There are two compatibility issues in the table above:
-1. Google Play Services on Android contains a complete webauthn implementation, but it appears to be
-   hardwired to use only "passkeys". If a site explicitly requests a *non-discoverable* credential,
-   you will be prompted to use an NFC security key, but this is only CTAP1 and not CTAP2. There's
-   nothing fundamentally preventing this from working on Android but the current state of Chrome
-   and Fennec are that CTAP2 doesn't, because both use the broken Play Services library. MicroG has
-   a fully-working implementation, though! See https://github.com/microg/GmsCore/pull/2194 for PIN
-   support.
-1. Some browsers support FIDO2 in theory but only allow USB security keys - this implementation
-   is for PC/SC, and doesn't implement USB HID, so it will only work with FIDO2
-   implementations that can handle e.g. NFC tokens instead of being restricted to USB.
-   In order to use a smartcard in these situations you'll need https://github.com/StarGate01/CTAP-bridge ,
-   https://github.com/BryanJacobs/fido2-hid-bridge/ , https://github.com/BryanJacobs/FIDOk/ or similar,
-   bridging USB-HID traffic to PC/SC.
+Pull requests and issues are welcome.

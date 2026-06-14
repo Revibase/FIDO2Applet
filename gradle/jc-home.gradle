@@ -19,8 +19,7 @@ ext {
         }
 
         def bundledCandidates = [
-                rootProject.file("jc304_kit"),
-                rootProject.file("sdks/jc304_kit"),
+                rootProject.file("sdks/jc305u4_kit"),
         ]
         for (def candidate : bundledCandidates) {
             if (isValidSdk(candidate)) {

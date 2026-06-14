@@ -2,8 +2,8 @@
   "_comment": "Copy to config/card.json and edit. Run: ./register_card.sh config/card.json. Resume state: config/card.json.provision-state.json",
 
   "paths": {
-    "fido_cap": "build/javacard/FIDO2.cap",
-    "ndef_stub_cap": "applet-stub/build/javacard/openjavacard-ndef-stub.cap"
+    "fido_cap": "applets/fido2/build/javacard/FIDO2.cap",
+    "ndef_stub_cap": "applets/ndef/build/javacard/openjavacard-ndef-stub.cap"
   },
 
   "aids": {
@@ -34,16 +34,16 @@
     ]
   },
 
+  "ndef_install": {
+    "base_url": "https://revibase.com/verify"
+  },
+
   "fido_install": {
-    "enable_attestation": true,
-    "only_allow_one_resident_credential": true,
-    "disable_pin_set": true,
-    "disable_reset": true,
-    "ndef_base_url": "https://revibase.com/verify"
+    "enable_attestation": true
   },
 
   "attestation": {
-    "name": "FIDO2Applet",
+    "name": "Custom Applet",
     "org": "REVIBASE",
     "country": "US",
     "aaguid": null,

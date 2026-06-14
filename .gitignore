@@ -5,11 +5,11 @@
 /venv-x86
 __pycache__
 /bin
-certs.json
 config/card.json
 *.provision-state.json
-install.sh
 .cursor
+.claude
 graphify-out
-applet-stub/build
-jc304_kit
+applets/fido2/build
+applets/ndef/build
+python/**/__pycache__

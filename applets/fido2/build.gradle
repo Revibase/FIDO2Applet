@@ -1,0 +1,97 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven { url "https://javacard.pro/maven" }
+    }
+}
+
+plugins {
+    id("java")
+    id("com.klinec.gradle.javacard") version "1.8.0" apply false
+}
+
+apply from: rootProject.file("gradle/jc-home.gradle")
+
+def jcHome = rootProject.ext.resolveJcHome()
+def jcHomeSet = jcHome != null
+if (!jcHomeSet) {
+    project.logger.warn("No JavaCard SDK found - set JC_HOME or initialize the sdks submodule (sdks/jc305u4_kit)")
+}
+
+version = "1.0-SNAPSHOT"
+group = "us.q3q"
+
+repositories {
+    mavenCentral()
+}
+
+configurations.configureEach {
+    resolutionStrategy.force 'com.klinec:jcardsim:3.0.6.0'
+}
+
+dependencies {
+    if (jcHomeSet) {
+        compileOnly project(':applets:ndef')
+    } else {
+        implementation(group: 'com.klinec', name: 'jcardsim', version: '3.0.6.0')
+        implementation project(':applets:ndef')
+    }
+    testImplementation project(':applets:ndef')
+    testImplementation(group: 'com.klinec', name: 'jcardsim', version: '3.0.6.0') {
+        exclude(group: 'oracle.javacard', module: 'api_classic')
+    }
+    testImplementation group: 'org.junit.jupiter', name: 'junit-jupiter-api', version: '5.8.1'
+    testRuntimeOnly group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: '5.8.1'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.named('jar') {
+    archiveBaseName = 'fido2applet'
+}
+
+tasks.register('testJar', Jar) {
+    archiveBaseName = 'fido2applet-tests'
+    duplicatesStrategy = 'include'
+    dependsOn ':applets:ndef:classes'
+    from sourceSets.test.output + sourceSets.test.allSource
+    from project(':applets:ndef').sourceSets.main.output
+    from {
+        sourceSets.test.runtimeClasspath.filter {
+            it.toString().indexOf("jcardsim-") != -1
+        }.collect {
+            zipTree(it)
+        }
+    }
+}
+
+if (jcHomeSet) {
+    apply plugin: "com.klinec.gradle.javacard"
+    javacard {
+        config {
+            jckit jcHome
+            cap {
+                packageName 'us.q3q.fido2'
+                version '0.4'
+                aid PackageID
+                output 'FIDO2.cap'
+                applet {
+                    className 'us.q3q.fido2.FIDO2Applet'
+                    aid ApplicationID
+                }
+                dependencies {
+                    local {
+                        exps project(':applets:ndef').layout.buildDirectory.dir('javacard/openjavacard-ndef-stub.exp').get().asFile.absolutePath
+                        jar project(':applets:ndef').layout.buildDirectory.file('javacard/openjavacard-ndef-stub.exp/stub.jar').get().asFile.absolutePath
+                    }
+                }
+            }
+        }
+    }
+
+    tasks.named('buildJavaCard') {
+        dependsOn(':applets:ndef:buildJavaCard')
+    }
+}
