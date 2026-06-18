@@ -95,7 +95,13 @@ class ProvisionStateTest(unittest.TestCase):
         state.mark_complete("install_attestation")
         self.assertEqual(
             state.virtual_session_steps(),
-            ["install_applets", "install_attestation", "make_credential", "verify_ndef"],
+            [
+                "install_applets",
+                "install_attestation",
+                "make_credential",
+                "verify_ndef",
+                "register",
+            ],
         )
         self.assertTrue(state.virtual_force_step("install_applets"))
         self.assertTrue(state.virtual_force_step("install_attestation"))

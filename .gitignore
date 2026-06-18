@@ -11,5 +11,7 @@ config/card.json
 .claude
 graphify-out
 applets/fido2/build
+applets/fido2/bin
 applets/ndef/build
+applets/ndef/bin
 python/**/__pycache__

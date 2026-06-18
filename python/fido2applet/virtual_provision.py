@@ -20,6 +20,7 @@ from fido2applet.provision import (
     build_ndef_javacard_install_buffer,
     wrap_fido_javacard_install_params,
 )
+from fido2applet.register_backend import register_card_with_backend
 from fido2applet.provision_state import (
     ProvisionRunner,
     ProvisionState,
@@ -30,6 +31,7 @@ from fido2applet.sim import CommandType, FakeSCConnection, JCardSimTestCase
 from fido2applet.ndef.protocol import (
     parse_ndef_uri,
     read_ndef_type4_phone,
+    verify_ndef_extras,
     verify_signed_ndef_uri,
 )
 
@@ -170,7 +172,7 @@ def provision_virtual_card(
         print(f"    AAGUID: {cred.auth_data.credential_data.aaguid.hex()}")
         return {"make_credential": {"credential_id": cred_id.hex()}}
 
-    def step_verify_ndef(session: VirtualCardSession) -> None:
+    def step_verify_ndef(session: VirtualCardSession) -> dict[str, Any] | None:
         if not verify.get("check_ndef", True):
             return
         if not base_url:
@@ -181,6 +183,12 @@ def provision_virtual_card(
             return
         uri = verify_signed_ndef_uri_virtual(session.transmit_apdu, base_url)
         print(f"    NDEF URI: {uri}")
+        pk = verify_ndef_extras(uri)["verify_ndef"]["public_key"]
+        print(f"    Public key (pk): {pk[:20]}…")
+        return verify_ndef_extras(uri)
+
+    def step_register() -> dict[str, Any] | None:
+        return register_card_with_backend(config, state, dry_run=dry_run)
 
     if dry_run:
         for step_id in state.steps:
@@ -206,6 +214,8 @@ def provision_virtual_card(
                     print(f"==> Verify NDEF signed URL (base {base_url!r})")
                 elif verify.get("check_ndef", True):
                     print("==> Skip NDEF verify (no base URL configured)")
+            elif step_id == "register":
+                register_card_with_backend(config, state, dry_run=True)
         return
 
     with VirtualCardSession() as session:
@@ -233,5 +243,11 @@ def provision_virtual_card(
                 runner.run_step(
                     step_id,
                     lambda: step_verify_ndef(session),
+                    force=force,
+                )
+            elif step_id == "register":
+                runner.run_step(
+                    step_id,
+                    lambda: step_register(),
                     force=force,
                 )

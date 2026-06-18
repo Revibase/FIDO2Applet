@@ -28,10 +28,7 @@
       "lock": true
     },
     "delete_before_install": true,
-    "delete_package_aids": [
-      "A000000647",
-      "D276000177100211020001"
-    ]
+    "delete_package_aids": ["A000000647", "D276000177100211020001"]
   },
 
   "ndef_install": {
@@ -69,5 +66,12 @@
   "verify": {
     "check_ndef": true,
     "expected_base_url": null
+  },
+  "register": {
+    "enabled": true,
+    "end_point": "https://revibase.com/api/mint",
+    "mint": null,
+    "secret": null,
+    "lock_asset_on_create": false
   }
 }

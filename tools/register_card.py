@@ -8,6 +8,7 @@ Usage:
     ./register_card.py config/card.json --dry-run
     ./register_card.py config/card.json --fresh          # ignore saved state
     ./register_card.py config/card.json --from-step install_attestation
+    ./register_card.py config/card.json --from-step register
     ./register_card.py config/card.json --status
 """
 
@@ -37,6 +38,7 @@ from fido2applet.provision import (
     cap_file_hash,
     ndef_gp_install_params,
 )
+from fido2applet.register_backend import register_card_with_backend
 from fido2applet.provision_state import (
     PHYSICAL_STEPS,
     VIRTUAL_STEPS,
@@ -48,7 +50,7 @@ from fido2applet.provision_state import (
     config_fingerprint,
 )
 from fido2applet.virtual_provision import provision_virtual_card
-from fido2applet.ndef.protocol import validate_ndef_base_url
+from fido2applet.ndef.protocol import validate_ndef_base_url, verify_ndef_extras
 
 MAX_NDEF_BASE_URL_LEN = 96
 # GlobalPlatformPro key: optional type prefix (emv:, mac:, …) + 16–32 byte hex
@@ -364,12 +366,11 @@ def step_make_credential_physical(config: dict[str, Any], dry_run: bool) -> dict
     return {"make_credential": {"credential_id": cred_id.hex()}}
 
 
-def step_verify_ndef_physical(config: dict[str, Any], dry_run: bool) -> None:
+def step_verify_ndef_physical(config: dict[str, Any], dry_run: bool) -> dict[str, Any] | None:
     verify = config.get("verify", {})
     if not verify.get("check_ndef", True):
         return
 
-    fido_install = config.get("fido_install", {})
     ndef_install = config.get("ndef_install", {})
     base_url = verify.get("expected_base_url") or ndef_install.get("base_url")
     if not base_url:
@@ -391,10 +392,21 @@ def step_verify_ndef_physical(config: dict[str, Any], dry_run: bool) -> None:
                 "ndef_install.base_url is set, then re-run make_credential."
             )
         print(f"    NDEF URI: {uri}")
+        pk = verify_ndef_extras(uri)["verify_ndef"]["public_key"]
+        print(f"    Public key (pk): {pk[:20]}…")
+        return verify_ndef_extras(uri)
     except ValueError as exc:
         raise RuntimeError(
             "NDEF verify failed after makeCredential"
         ) from exc
+
+
+def step_register_backend(
+    config: dict[str, Any],
+    state: ProvisionState,
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    return register_card_with_backend(config, state, dry_run=dry_run)
 
 
 def provision_physical_card(
@@ -440,6 +452,10 @@ def provision_physical_card(
     runner.run_step(
         "verify_ndef",
         lambda: step_verify_ndef_physical(config, dry_run),
+    )
+    runner.run_step(
+        "register",
+        lambda: step_register_backend(config, state, dry_run),
     )
 
 

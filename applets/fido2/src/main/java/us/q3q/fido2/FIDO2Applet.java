@@ -23,8 +23,6 @@ import javacardx.crypto.Cipher;
 
 import org.openjavacard.ndef.stub.NdefKeyStore;
 
-import java.lang.SecurityException;
-
 /**
  * Slim FIDO2 CTAP2 applet: resident-key-only, no PIN/U2F/cred-mgmt.
  */
@@ -60,8 +58,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private static final short CREDENTIAL_ID_LEN = (short) (CREDENTIAL_PAYLOAD_LEN + IV_LEN + 16);
     private static final short PUB_KEY_LENGTH = (short) (2 * KEY_POINT_LENGTH + 1);
     private static final short CLIENT_DATA_HASH_LEN = 32;
-    private static final short APPROXIMATE_STORAGE_PER_RESIDENT_KEY = 368;
-
     private byte[] bufferMem;
     private final byte[] credentialVerificationKey;
     private final byte[] wrappingKeySpace;

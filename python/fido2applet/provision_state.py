@@ -20,6 +20,7 @@ PHYSICAL_STEPS = (
     "install_attestation",
     "make_credential",
     "verify_ndef",
+    "register",
 )
 
 VIRTUAL_STEPS = (
@@ -27,6 +28,7 @@ VIRTUAL_STEPS = (
     "install_attestation",
     "make_credential",
     "verify_ndef",
+    "register",
 )
 
 
@@ -47,6 +49,8 @@ class ProvisionState:
     completed_steps: list[str] = field(default_factory=list)
     attestation: dict[str, Any] = field(default_factory=dict)
     make_credential: dict[str, Any] = field(default_factory=dict)
+    verify_ndef: dict[str, Any] = field(default_factory=dict)
+    register: dict[str, Any] = field(default_factory=dict)
     cap_digests: dict[str, str] = field(default_factory=dict)
     last_error: Optional[str] = None
     failed_step: Optional[str] = None
@@ -68,10 +72,12 @@ class ProvisionState:
 
     def invalidate_credential_steps(self) -> None:
         """Drop makeCredential / NDEF verify checkpoints after applet reinstall."""
-        for step_id in ("make_credential", "verify_ndef"):
+        for step_id in ("make_credential", "verify_ndef", "register"):
             if step_id in self.completed_steps:
                 self.completed_steps.remove(step_id)
         self.make_credential = {}
+        self.verify_ndef = {}
+        self.register = {}
 
     def invalidate_from_delete_packages(self) -> None:
         """Drop on-card install state after CAP rebuild or config-driven reinstall."""
@@ -80,6 +86,8 @@ class ProvisionState:
         self.completed_steps = [s for s in self.completed_steps if s not in drop]
         self.attestation = {}
         self.make_credential = {}
+        self.verify_ndef = {}
+        self.register = {}
         self.cap_digests = {}
 
     def mark_complete(self, step_id: str, **extras: Any) -> None:
@@ -89,6 +97,10 @@ class ProvisionState:
             self.attestation.update(extras["attestation"])
         if extras.get("make_credential"):
             self.make_credential.update(extras["make_credential"])
+        if extras.get("verify_ndef"):
+            self.verify_ndef.update(extras["verify_ndef"])
+        if extras.get("register"):
+            self.register.update(extras["register"])
         if extras.get("cap_digests"):
             self.cap_digests.update(extras["cap_digests"])
         self.last_error = None
@@ -104,6 +116,8 @@ class ProvisionState:
         self.completed_steps = []
         self.attestation = {}
         self.make_credential = {}
+        self.verify_ndef = {}
+        self.register = {}
         self.cap_digests = {}
         self.last_error = None
         self.failed_step = None
@@ -130,12 +144,22 @@ class ProvisionState:
             self.attestation = {}
         if step_id in (
             "make_credential",
-            "verify_ndef",
             "install_applets",
             "install_ndef",
             "install_fido",
         ):
             self.make_credential = {}
+        if step_id in (
+            "verify_ndef",
+            "register",
+            "make_credential",
+            "install_applets",
+            "install_ndef",
+            "install_fido",
+        ):
+            self.verify_ndef = {}
+        if step_id in ("register", "verify_ndef", "make_credential", "install_applets", "install_ndef", "install_fido"):
+            self.register = {}
         if step_id in ("delete_packages", "install_applets", "install_ndef", "install_fido"):
             self.cap_digests = {}
         self.last_error = None
@@ -166,6 +190,8 @@ class ProvisionState:
             "completed_steps": self.completed_steps,
             "attestation": self.attestation,
             "make_credential": self.make_credential,
+            "verify_ndef": self.verify_ndef,
+            "register": self.register,
             "cap_digests": self.cap_digests,
             "last_error": self.last_error,
             "failed_step": self.failed_step,
@@ -184,6 +210,8 @@ class ProvisionState:
             completed_steps=list(data.get("completed_steps", [])),
             attestation=dict(data.get("attestation", {})),
             make_credential=dict(data.get("make_credential", {})),
+            verify_ndef=dict(data.get("verify_ndef", {})),
+            register=dict(data.get("register", {})),
             cap_digests=dict(data.get("cap_digests", {})),
             last_error=data.get("last_error"),
             failed_step=data.get("failed_step"),

@@ -450,6 +450,12 @@ def parse_query_param(uri: str, name: str) -> str:
     raise ValueError(f"Missing query parameter {name!r} in {uri!r}")
 
 
+def verify_ndef_extras(uri: str) -> dict[str, dict[str, str]]:
+    """Provision-state payload from a verified NDEF signed URL."""
+    public_key = parse_query_param(uri, "pk")
+    return {"verify_ndef": {"public_key": public_key, "ndef_uri": uri}}
+
+
 def b64url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
