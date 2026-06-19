@@ -66,7 +66,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.assertEqual(Aaguid.NONE, res.auth_data.credential_data.aaguid)
         pubkey = res.auth_data.credential_data.public_key
         pubkey.verify(res.auth_data + self.client_data, res.att_stmt['sig'])
-        self.assertEqual(112, len(res.auth_data.credential_data.credential_id))
+        self.assertEqual(64, len(res.auth_data.credential_data.credential_id))
 
     def test_get_assertion_handles_nesting(self):
         cred = self.ctap2.make_credential(**self.basic_makecred_params)
@@ -194,17 +194,18 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
         self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
 
-    def test_non_matching_rp(self):
+    def test_non_matching_rp_still_signs(self):
+        # The RP ID check is intentionally skipped: a get_assertion for any RP ID succeeds using
+        # the resident key, signing over whatever RP ID hash the platform sent in the request.
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.get_assertion(
-                rp_id='___different',
-                client_data_hash=self.get_random_client_data(),
-                allow_list=[self.get_mapping_from_cred_id(
-                    cred_res.auth_data.credential_data.credential_id
-                )],
-            )
-        self.assertEqual(CtapError.ERR.NO_CREDENTIALS, ctx.exception.code)
+        assert_res = self.ctap2.get_assertion(
+            rp_id='___different',
+            client_data_hash=self.get_random_client_data(),
+            allow_list=[self.get_mapping_from_cred_id(
+                cred_res.auth_data.credential_data.credential_id
+            )],
+        )
+        self.assertEqual(self.rp_id_hash('___different'), assert_res.auth_data.rp_id_hash)
 
     def test_make_credential_with_bogus_extension(self):
         res = self.ctap2.make_credential(

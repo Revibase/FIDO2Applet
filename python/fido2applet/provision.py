@@ -155,5 +155,5 @@ def gp_install_and_make_selectable_data_len(
 
 
 def gp_min_block_size_for_command_data(data_len: int) -> int:
-    """Minimum gp --bs so SCP-wrapped command data fits (MAC subtracts 8)."""
+    """Minimum gp so SCP-wrapped command data fits (MAC subtracts 8)."""
     return data_len + GP_SCP_MAC_OVERHEAD

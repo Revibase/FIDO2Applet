@@ -255,7 +255,6 @@ def step_install_fido(config: dict[str, Any], dry_run: bool) -> None:
     run_gp(
         config,
         [
-            "--bs", str(254),
             "--install", str(fido_cap),
             "--params", params,
             "--force",
@@ -319,7 +318,6 @@ def step_install_ndef(config: dict[str, Any], dry_run: bool) -> None:
     run_gp(
         config,
         [
-            "--bs", str(254),
             "--install", str(ndef_cap),
             "--create", aids["ndef_applet"],
             "--params", params,
