@@ -72,6 +72,6 @@
     "end_point": "https://revibase.com/api/mint",
     "mint": null,
     "secret": null,
-    "lock_asset_on_create": false
+    "asset_type": 0
   }
 }

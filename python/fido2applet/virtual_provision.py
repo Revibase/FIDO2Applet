@@ -18,6 +18,7 @@ from fido2applet.provision import (
     build_fido_install_params_bytes,
     build_make_credential_params,
     build_ndef_javacard_install_buffer,
+    credential_id_b64url,
     wrap_fido_javacard_install_params,
 )
 from fido2applet.register_backend import register_card_with_backend
@@ -168,9 +169,10 @@ def provision_virtual_card(
 
         cred = session.ctap2.make_credential(**build_make_credential_params(config))
         cred_id = cred.auth_data.credential_data.credential_id
-        print(f"    Credential ID: {cred_id.hex()}")
+        cred_id_b64url = credential_id_b64url(cred_id)
+        print(f"    Credential ID: {cred_id_b64url}")
         print(f"    AAGUID: {cred.auth_data.credential_data.aaguid.hex()}")
-        return {"make_credential": {"credential_id": cred_id.hex()}}
+        return {"make_credential": {"credential_id": cred_id_b64url}}
 
     def step_verify_ndef(session: VirtualCardSession) -> dict[str, Any] | None:
         if not verify.get("check_ndef", True):

@@ -36,6 +36,7 @@ from fido2applet.provision import (
     build_make_credential_params,
     cap_file_digest,
     cap_file_hash,
+    credential_id_b64url,
     ndef_gp_install_params,
 )
 from fido2applet.register_backend import register_card_with_backend
@@ -359,9 +360,10 @@ def step_make_credential_physical(config: dict[str, Any], dry_run: bool) -> dict
             "--from-step install_fido"
         ) from exc
     cred_id = cred.auth_data.credential_data.credential_id
-    print(f"    Credential ID: {cred_id.hex()}")
+    cred_id_b64url = credential_id_b64url(cred_id)
+    print(f"    Credential ID: {cred_id_b64url}")
     print(f"    AAGUID: {cred.auth_data.credential_data.aaguid.hex()}")
-    return {"make_credential": {"credential_id": cred_id.hex()}}
+    return {"make_credential": {"credential_id": cred_id_b64url}}
 
 
 def step_verify_ndef_physical(config: dict[str, Any], dry_run: bool) -> dict[str, Any] | None:

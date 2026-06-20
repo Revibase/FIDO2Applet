@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import subprocess
@@ -17,6 +18,11 @@ from fido2applet.ndef.protocol import validate_ndef_base_url
 REPO_ROOT = repo_root()
 
 MAX_NDEF_BASE_URL_LEN = 96
+
+
+def credential_id_b64url(cred_id: bytes) -> str:
+    """base64url (no padding) credential ID — the form the backend expects."""
+    return base64.urlsafe_b64encode(cred_id).decode("ascii").rstrip("=")
 
 
 def cap_file_digest(cap_path: Path) -> str:
