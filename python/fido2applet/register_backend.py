@@ -4,11 +4,27 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any
 
 from fido2applet.provision_state import ProvisionState
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Build a verifying SSL context, falling back to certifi's CA bundle.
+
+    Some Python installs (notably python.org builds on macOS) ship without a
+    CA bundle wired into OpenSSL, so the default context can't verify any
+    certificate. Prefer certifi's bundle when it's importable.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 def register_card_with_backend(
@@ -75,11 +91,19 @@ def register_card_with_backend(
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {secret}",
+            "Accept": "application/json",
+            # Cloudflare (error 1010) blocks the default "Python-urllib/x.y"
+            # User-Agent, so present a normal browser signature.
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
         },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=_ssl_context()) as resp:
             body = resp.read().decode("utf-8")
             status = getattr(resp, "status", 200)
     except urllib.error.HTTPError as exc:
