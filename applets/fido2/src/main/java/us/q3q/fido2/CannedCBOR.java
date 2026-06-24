@@ -25,21 +25,20 @@ public abstract class CannedCBOR {
             0x50, // byte string, 16 bytes long
     };
 
-    /** getInfo map key 0x04 (options): rk/up/alwaysUv/clientPin (canonical string order) */
+    /** getInfo map key 0x04 (options): rk/up/alwaysUv (canonical string order).
+     * clientPin is intentionally omitted: the applet implements no authenticatorClientPIN
+     * command, and per CTAP2.1 the option must be absent (not false) when PIN is unsupported. */
     static final byte[] AUTH_INFO_LITE_OPTIONS = {
             0x04, // map key: options
-            (byte) 0xA4, // map: four entries
+            (byte) 0xA3, // map: three entries
                 0x62, // string: two bytes long
                     0x72, 0x6B, // rk
                     (byte) 0xF5, // true
                 0x62, // string: two bytes long
                     0x75, 0x70, // up
-                    (byte) 0xF4, // false
+                    (byte) 0xF5, // true (NFC tap satisfies user presence)
                 0x68, // string: eight bytes long
                     0x61, 0x6C, 0x77, 0x61, 0x79, 0x73, 0x55, 0x76, // alwaysUv
-                    (byte) 0xF4, // false
-                0x69, // string: nine bytes long
-                    0x63, 0x6C, 0x69, 0x65, 0x6E, 0x74, 0x50, 0x69, 0x6E, // clientPin
                     (byte) 0xF4, // false
     };
 

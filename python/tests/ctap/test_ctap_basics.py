@@ -21,9 +21,8 @@ class CTAPBasicsTestCase(CTAPTestCase):
         info = self.ctap2.get_info()
         self.assertEqual({
             "alwaysUv": False,
-            "clientPin": False,
             "rk": True,
-            "up": False,
+            "up": True,
         }, info.options)
 
     def test_info_aaguid_none(self):
@@ -59,7 +58,8 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.assertIsNone(res.auth_data.extensions)
         self.assertIsNotNone(res.att_stmt)
         self.assertIsNone(res.att_stmt.get('x5c'))
-        self.assertEqual(res.auth_data.FLAG.ATTESTED, res.auth_data.flags)
+        self.assertEqual(res.auth_data.FLAG.ATTESTED | res.auth_data.FLAG.USER_PRESENT,
+                         res.auth_data.flags)
         self.assertEqual(self.rp_id_hash(rp_id), res.auth_data.rp_id_hash)
         self.assertEqual(ES256.ALGORITHM, res.att_stmt['alg'])
         self.assertIsNotNone(res.att_stmt['sig'])
@@ -67,6 +67,15 @@ class CTAPBasicsTestCase(CTAPTestCase):
         pubkey = res.auth_data.credential_data.public_key
         pubkey.verify(res.auth_data + self.client_data, res.att_stmt['sig'])
         self.assertEqual(64, len(res.auth_data.credential_data.credential_id))
+
+    def test_make_credential_sets_user_present_flag(self):
+        res = self.ctap2.make_credential(**self.basic_makecred_params)
+        self.assertTrue(res.auth_data.flags & res.auth_data.FLAG.USER_PRESENT)
+
+    def test_get_assertion_sets_user_present_flag(self):
+        cred = self.ctap2.make_credential(**self.basic_makecred_params)
+        assert_res = self.get_assertion_from_cred(cred)
+        self.assertTrue(assert_res.auth_data.flags & assert_res.auth_data.FLAG.USER_PRESENT)
 
     def test_get_assertion_handles_nesting(self):
         cred = self.ctap2.make_credential(**self.basic_makecred_params)

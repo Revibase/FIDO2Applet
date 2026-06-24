@@ -717,7 +717,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         bufferMem[outputLen++] = (byte) 0xA3;
         outputLen = Util.arrayCopyNonAtomic(CannedCBOR.MAKE_CREDENTIAL_RESPONSE_PREAMBLE, (short) 0,
                 bufferMem, outputLen, (short) CannedCBOR.MAKE_CREDENTIAL_RESPONSE_PREAMBLE.length);
-        byte flags = 0x40;
+        byte flags = 0x41; // AT (attested credential data) + UP (user present)
         final short adLen = getAuthDataLen(true);
         final short adAddlBytes = writeAD(bufferMem, outputLen, adLen, scratchRPIDHashBuffer, scratchRPIDHashOffset,
                 scratchPublicKeyBuffer, (short) (scratchPublicKeyOffset + 1), flags,
@@ -894,7 +894,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         outputBuffer[outputIdx++] = 0x01;
         outputIdx = packCredentialId(credStorageBuffer, credStorageOffset, outputBuffer, outputIdx);
         outputBuffer[outputIdx++] = 0x02;
-        byte flags = 0x00;
+        byte flags = 0x01; // UP (user present)
         short adLen = getAuthDataLen(false);
         final short adAddlBytes = writeADBasic(outputBuffer, adLen, outputIdx, flags,
                 scratchRPIDHashBuffer, scratchRPIDHashIdx);
