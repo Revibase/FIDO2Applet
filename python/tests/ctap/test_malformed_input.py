@@ -65,10 +65,11 @@ class CTAPMalformedInputTestCase(CTAPTestCase):
         self.assertEqual(CtapError.ERR.INVALID_OPTION, res[0])
 
     def test_empty_pinuvauth_with_create(self):
-        # No options map (key 7) with rk:true — resident-key-only applet rejects this.
+        # Zero-length pinUvAuthParam (key 8) is the platform probing for PIN state;
+        # CTAP2.0 requires answering PIN_NOT_SET before any option processing.
         res = self.ctap2.device.call(0x10, bytes.fromhex("01A5015820FDA53DBE83484DC63BE566B024696E84FE0E24B219535EB98514D883481C5E5402A1626964781834316165343262633166623338343132386561333566646403A3626964583DBDEA92D4DAFD424B45B3DCE17BF6B8F65632D20D6CAF844BA92FE5CA44EFEDCF6A25059BF7AFB20AB2EBA99FF8D35A8EF0460D7233918505CA4998CA06646E616D656E38656536313763656133636464366C646973706C61795F6E616D65782632336362626239363038326665316439623738623734306235653735326133306334633130640481A263616C672664747970656A7075626C69632D6B65790840"))
 
-        self.assertEqual(CtapError.ERR.INVALID_OPTION, res[0])
+        self.assertEqual(CtapError.ERR.PIN_NOT_SET, res[0])
 
     def test_options_not_map_raw(self):
         # Key 6 holds a non-map where key 7 options would be; rk is never set.
@@ -91,7 +92,7 @@ class CTAPMalformedInputTestCase(CTAPTestCase):
             if dname_len == 10:
                 self.assertEqual(CtapError.ERR.SUCCESS, res[0])
             else:
-                self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, res[0])
+                self.assertEqual(CtapError.ERR.KEY_STORE_FULL, res[0])
 
     def test_bogus_exclude_list_entry_after_valid(self):
         cred = self.ctap2.make_credential(**self.basic_makecred_params)
@@ -102,7 +103,7 @@ class CTAPMalformedInputTestCase(CTAPTestCase):
                 12334
             ])
 
-        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, e.exception.code)
+        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, e.exception.code)
 
     def test_user_icon_not_text_bytes(self):
         self.basic_makecred_params['user']['icon'] = secrets.token_bytes(16)

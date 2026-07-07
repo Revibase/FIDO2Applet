@@ -193,6 +193,34 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 readIdx++;
                 continue;
             }
+            if (optionStrLen == 2 && buffer[readIdx] == 'u' && buffer[(short) (readIdx + 1)] == 'p') {
+                readIdx += 2;
+                if (buffer[readIdx] == (byte) 0xF5) {
+                    transientStorage.setUPOption(true);
+                } else if (buffer[readIdx] == (byte) 0xF4) {
+                    if (requireRK) {
+                        // up:false is invalid for makeCredential (CTAP2.1; real
+                        // platforms send up:true, which is accepted)
+                        sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_OPTION);
+                    }
+                    transientStorage.setUPOption(false);
+                } else {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+                }
+                readIdx++;
+                continue;
+            }
+            if (optionStrLen == 2 && buffer[readIdx] == 'u' && buffer[(short) (readIdx + 1)] == 'v') {
+                readIdx += 2;
+                if (buffer[readIdx] == (byte) 0xF5) {
+                    // Built-in user verification is not supported
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_UNSUPPORTED_OPTION);
+                } else if (buffer[readIdx] != (byte) 0xF4) {
+                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+                }
+                readIdx++;
+                continue;
+            }
             readIdx += optionStrLen;
             readIdx = skipCborValue(apdu, buffer, readIdx, lc);
         }
@@ -200,6 +228,32 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_OPTION);
         }
         return readIdx;
+    }
+
+    /**
+     * Reject a pinUvAuthParam per CTAP2.0: a zero-length value is the platform probing
+     * for PIN state (answer: no PIN is set); anything else can never verify because
+     * clientPin is unsupported. Always terminates the request.
+     */
+    private void rejectPinUvAuthParam(APDU apdu, byte[] buffer, short readIdx, short lc) {
+        if (readIdx >= lc) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
+        }
+        final short valDef = ub(buffer[readIdx]);
+        short paramLen = -1;
+        if (valDef >= 0x0040 && valDef <= 0x0057) {
+            paramLen = (short) (valDef - 0x0040);
+        } else if (valDef == 0x0058) {
+            if ((short) (readIdx + 1) >= lc) {
+                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
+            }
+            paramLen = ub(buffer[(short) (readIdx + 1)]);
+        }
+        if (paramLen < 0) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+        }
+        sendErrorByte(apdu, paramLen == 0 ? FIDOConstants.CTAP2_ERR_PIN_NOT_SET
+                : FIDOConstants.CTAP2_ERR_PIN_AUTH_INVALID);
     }
 
     private short getAuthDataLen(boolean includeAttestedKey) {
@@ -600,6 +654,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 case 0x07:
                     readIdx = processOptionsMap(apdu, buffer, readIdx, lc, true);
                     continue;
+                case 0x08: // pinUvAuthParam
+                    rejectPinUvAuthParam(apdu, buffer, readIdx, lc);
+                    continue;
                 default:
                     break;
             }
@@ -620,7 +677,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         final short scratchCredOffset = bufferManager.getOffsetForHandle(scratchCredHandle);
         final byte[] scratchCredBuffer = bufferManager.getBufferForHandle(apdu, scratchCredHandle);
         if (numResidentCredentials > 0 && residentKeys[0] != null) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_LIMIT_EXCEEDED);
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_KEY_STORE_FULL);
         }
         P256Constants.setCurve((ECPrivateKey) ecKeyPair.getPrivate());
         final short scratchPublicKeyHandle = bufferManager.allocate(apdu, PUB_KEY_LENGTH, BufferManager.ANYWHERE);
@@ -774,7 +831,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
         }
         if (buffer[readIdx++] != 0x58 || buffer[readIdx++] != CLIENT_DATA_HASH_LEN) {
-            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_INVALID_PARAMETER);
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
         }
         Util.arrayCopyNonAtomic(buffer, readIdx, clientDataHashBuffer, clientDataHashIdx, CLIENT_DATA_HASH_LEN);
         readIdx += CLIENT_DATA_HASH_LEN;
@@ -792,6 +849,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             switch (buffer[readIdx++]) {
                 case 0x05:
                     readIdx = processOptionsMap(apdu, buffer, readIdx, lc, false);
+                    continue;
+                case 0x06: // pinUvAuthParam
+                    rejectPinUvAuthParam(apdu, buffer, readIdx, lc);
                     continue;
                 default:
                     break;
@@ -823,7 +883,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         outputBuffer[outputIdx++] = 0x01;
         outputIdx = packCredentialId(credStorageBuffer, credStorageOffset, outputBuffer, outputIdx);
         outputBuffer[outputIdx++] = 0x02;
-        byte flags = 0x01; // UP (user present)
+        // UP (user present) unless the platform asked for a silent assertion via up:false
+        byte flags = transientStorage.hasUPOption() ? (byte) 0x01 : (byte) 0x00;
         short adLen = getAuthDataLen(false);
         final short adAddlBytes = writeADBasic(outputBuffer, adLen, outputIdx, flags,
                 scratchRPIDHashBuffer, scratchRPIDHashIdx);
@@ -1151,7 +1212,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
 
         if (!foundId) {
-            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_INVALID_PARAMETER);
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
         }
         return readIdx;
     }
@@ -1213,7 +1274,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
 
         if (!foundId) {
-            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_INVALID_PARAMETER);
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
         }
         return readIdx;
     }
@@ -1767,10 +1828,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         
         if (cla_ins == 0x0001) {
             transientStorage.clearOutgoingContinuation();
-            // Single resident-key slot is full; U2F clients only handle ISO7816 SW codes.
-            throwException(ISO7816.SW_FILE_FULL);
+            // U2F REGISTER is intentionally unsupported: the single resident key is
+            // created via CTAP2 makeCredential only.
+            throwException(ISO7816.SW_COMMAND_NOT_ALLOWED);
             return;
-        }else if (cla_ins == 0x0002) {
+        } else if (cla_ins == 0x0002) {
             transientStorage.clearOutgoingContinuation();
             if (apduBytes[ISO7816.OFFSET_P2] != 0x00) {
                 throwException(ISO7816.SW_INCORRECT_P1P2);
@@ -1895,9 +1957,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
 
         if (p1 == 0x07) {
-            // Check-only: key handle accepted, no signature (U2F spec §4.2).
+            // Check-only with a valid key handle: U2F spec requires
+            // SW_CONDITIONS_NOT_SATISFIED ("test-of-user-presence required").
             bufferManager.release(apdu, scratchCredHandle, CREDENTIAL_PAYLOAD_LEN);
-            sendNoCopy(apdu, (short) 0);
+            throwException(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
             return;
         }
 
@@ -1911,7 +1974,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         final byte[] scratchSigBuffer = bufferManager.getBufferForHandle(apdu, scratchSigHandle);
 
         random.generateData(scratchSigBuffer, scratchSigOffset, (short) 1);
-        counter.increment((short) ((scratchSigBuffer[scratchSigOffset] & 0x0E) + 1));
+        if (!counter.increment((short) ((scratchSigBuffer[scratchSigOffset] & 0x0E) + 1))) {
+            throwException(ISO7816.SW_FILE_FULL);
+        }
 
         final short sigRPIDOffset = scratchSigOffset;
         final short sigFlagsByteOffset = (short) (sigRPIDOffset + RP_HASH_LEN);

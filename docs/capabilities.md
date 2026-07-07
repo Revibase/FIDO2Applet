@@ -35,8 +35,11 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | Behavior | Detail |
 |----------|--------|
 | `rk: true` | **Required** — omit or `false` → `INVALID_OPTION` |
-| Second credential | `LIMIT_EXCEEDED` |
+| Second credential | `KEY_STORE_FULL` |
 | `excludeList` | Ignored |
+| `up` option | `true` accepted (CTAP 2.1 style, sent by real platforms); `false` → `INVALID_OPTION` |
+| `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
+| `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | Attestation | `packed` self-attestation by default; basic (`x5c`) after cert install |
 | Credential ID | Fixed 64 bytes |
 
@@ -47,6 +50,9 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | `allowList` | Ignored — always signs with the resident key if present |
 | RP ID | Not enforced — signs over whatever RP ID the host sends |
 | User `id` | Returned when resident key is used |
+| `up: false` | Accepted — signs silently with the UP flag cleared |
+| `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
+| `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | Counter | Wear-leveled 32-bit |
 
 ## U2F (`U2F_V2`)
@@ -55,8 +61,8 @@ Available only **after** attestation cert is loaded and **after** `makeCredentia
 
 | Command | Status |
 |---------|--------|
-| REGISTER | Always rejected (`SW_FILE_FULL`) |
-| AUTHENTICATE | Signs with resident key |
+| REGISTER | Always rejected (`SW_COMMAND_NOT_ALLOWED`, `0x6986`) |
+| AUTHENTICATE | Signs with resident key; check-only (P1 `0x07`) → `SW_CONDITIONS_NOT_SATISFIED` (`0x6985`) per spec |
 | VERSION | Returns `U2F_V2` |
 
 **Intentional differences from U2F spec:**

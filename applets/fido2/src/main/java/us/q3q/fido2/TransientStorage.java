@@ -21,6 +21,7 @@ public final class TransientStorage {
     private static final byte BOOL_IDX_STREAM_STATEKEEPING = 0;
     private static final byte BOOL_IDX_OPTION_RK = 3;
     private static final byte BOOL_IDX_AUTHENTICATOR_DISABLED = 4;
+    private static final byte BOOL_IDX_OPTION_UP = 5;
 
     public TransientStorage() {
         tempBytes = JCSystem.makeTransientByteArray(NUM_RESET_BYTES, JCSystem.CLEAR_ON_DESELECT);
@@ -111,6 +112,7 @@ public final class TransientStorage {
 
     public void defaultOptions() {
         setBoolByIdx(BOOL_IDX_OPTION_RK, false);
+        setBoolByIdx(BOOL_IDX_OPTION_UP, true);
     }
 
     public boolean hasRKOption() {
@@ -119,6 +121,14 @@ public final class TransientStorage {
 
     public void setRKOption(boolean val) {
         setBoolByIdx(BOOL_IDX_OPTION_RK, val);
+    }
+
+    public boolean hasUPOption() {
+        return getBoolByIdx(BOOL_IDX_OPTION_UP);
+    }
+
+    public void setUPOption(boolean val) {
+        setBoolByIdx(BOOL_IDX_OPTION_UP, val);
     }
 
     public void setOutgoingContinuation(short offset, short remaining) {

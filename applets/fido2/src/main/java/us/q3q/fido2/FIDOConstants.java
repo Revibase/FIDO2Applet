@@ -43,6 +43,8 @@ public abstract class FIDOConstants {
     public static final byte CTAP2_ERR_NO_CREDENTIALS = 0x2E;
     public static final byte CTAP2_ERR_USER_ACTION_TIMEOUT = 0x2F;
     public static final byte CTAP2_ERR_NOT_ALLOWED = 0x30;
+    public static final byte CTAP2_ERR_PIN_AUTH_INVALID = 0x33;
+    public static final byte CTAP2_ERR_PIN_NOT_SET = 0x35;
     public static final byte CTAP2_ERR_REQUEST_TOO_LARGE = 0x39;
     public static final byte CTAP2_ERR_ACTION_TIMEOUT = 0x3A;
     public static final byte CTAP2_ERR_UP_REQUIRED = 0x3B;

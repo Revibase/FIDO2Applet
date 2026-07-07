@@ -29,11 +29,11 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.assertEqual({
             "rk": True,
             "up": True,
-            "uv": False,
-            "clientPin": False,
         }, info.options)
+        # Unsupported options must be absent, not false: present-but-false means
+        # "supported but not configured" per CTAP2.0.
         for unsupported in (
-            "alwaysUv", "pinUvAuthToken", "makeCredUvNotRqd",
+            "uv", "clientPin", "alwaysUv", "pinUvAuthToken", "makeCredUvNotRqd",
             "credMgmt", "credentialMgmtPreview", "largeBlobs", "bioEnroll", "ep", "plat",
         ):
             self.assertNotIn(unsupported, info.options)
@@ -69,10 +69,40 @@ class CTAPBasicsTestCase(CTAPTestCase):
             self.ctap2.make_credential(**params)
         self.assertEqual(CtapError.ERR.INVALID_OPTION, ctx.exception.code)
 
-    def test_make_credential_ignores_uv(self):
+    def test_make_credential_rejects_uv_true(self):
         params = copy.copy(self.basic_makecred_params)
         params['options'] = {'rk': True, 'uv': True}
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params)
+        self.assertEqual(CtapError.ERR.UNSUPPORTED_OPTION, ctx.exception.code)
+
+    def test_make_credential_accepts_uv_false(self):
+        params = copy.copy(self.basic_makecred_params)
+        params['options'] = {'rk': True, 'uv': False}
         self.ctap2.make_credential(**params)
+
+    def test_make_credential_accepts_up_true(self):
+        # Real platforms (e.g. Windows) send up:true in makeCredential; CTAP2.1 allows it.
+        params = copy.copy(self.basic_makecred_params)
+        params['options'] = {'rk': True, 'up': True}
+        self.ctap2.make_credential(**params)
+
+    def test_make_credential_rejects_up_false(self):
+        params = copy.copy(self.basic_makecred_params)
+        params['options'] = {'rk': True, 'up': False}
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params)
+        self.assertEqual(CtapError.ERR.INVALID_OPTION, ctx.exception.code)
+
+    def test_make_credential_rejects_pin_uv_auth_param(self):
+        params = copy.copy(self.basic_makecred_params)
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params, pin_uv_param=b"", )
+        self.assertEqual(CtapError.ERR.PIN_NOT_SET, ctx.exception.code)
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params, pin_uv_param=secrets.token_bytes(16),
+                                       pin_uv_protocol=1)
+        self.assertEqual(CtapError.ERR.PIN_AUTH_INVALID, ctx.exception.code)
 
     def test_make_credential_self_attestation(self):
         rp_id = secrets.token_hex(50)
@@ -140,7 +170,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.ctap2.make_credential(**self.basic_makecred_params)
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
+        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
 
     def test_makecred_ignores_exclude_list(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
@@ -148,7 +178,44 @@ class CTAPBasicsTestCase(CTAPTestCase):
         params['exclude_list'] = [self.get_allow_list_entry_from_ll_cred(cred_res)]
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**params)
-        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
+        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
+
+    def test_get_assertion_up_false_clears_flag(self):
+        cred = self.ctap2.make_credential(**self.basic_makecred_params)
+        assert_res = self.ctap2.get_assertion(
+            rp_id=self.rp_id,
+            client_data_hash=self.get_random_client_data(),
+            options={'up': False},
+        )
+        self.assertFalse(assert_res.auth_data.flags & assert_res.auth_data.FLAG.USER_PRESENT)
+
+    def test_get_assertion_rejects_uv_true(self):
+        self.ctap2.make_credential(**self.basic_makecred_params)
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.get_assertion(
+                rp_id=self.rp_id,
+                client_data_hash=self.get_random_client_data(),
+                options={'uv': True},
+            )
+        self.assertEqual(CtapError.ERR.UNSUPPORTED_OPTION, ctx.exception.code)
+
+    def test_get_assertion_rejects_pin_uv_auth_param(self):
+        self.ctap2.make_credential(**self.basic_makecred_params)
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.get_assertion(
+                rp_id=self.rp_id,
+                client_data_hash=self.get_random_client_data(),
+                pin_uv_param=b"",
+            )
+        self.assertEqual(CtapError.ERR.PIN_NOT_SET, ctx.exception.code)
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.get_assertion(
+                rp_id=self.rp_id,
+                client_data_hash=self.get_random_client_data(),
+                pin_uv_param=secrets.token_bytes(16),
+                pin_uv_protocol=1,
+            )
+        self.assertEqual(CtapError.ERR.PIN_AUTH_INVALID, ctx.exception.code)
 
     def test_accepts_long_utf8_display_name(self):
         self.basic_makecred_params['user']['display_name'] = "猫" * 144
@@ -253,7 +320,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.basic_makecred_params['user']['id'] = secrets.token_bytes(16)
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
+        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
 
     def test_second_resident_different_rp_rejected(self):
         self.ctap2.make_credential(**self.basic_makecred_params)
@@ -261,4 +328,4 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.basic_makecred_params['user']['id'] = secrets.token_bytes(16)
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
+        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)

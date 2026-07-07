@@ -16,8 +16,8 @@ U2F_INS_VERSION = 0x03
 
 SW_NO_ERROR = 0x9000
 SW_WRONG_LENGTH = 0x6700
+SW_CONDITIONS_NOT_SATISFIED = 0x6985
 SW_WRONG_DATA = 0x6A80
-SW_FILE_FULL = 0x6A84
 SW_COMMAND_NOT_ALLOWED = 0x6986
 
 
@@ -104,12 +104,12 @@ class U2FAuthenticateTestCase(BasicAttestationTestCase):
         challenge = secrets.token_bytes(32)
         app_id = self.rp_id_hash(self.rp_id)
         resp = self.u2f_transmit(build_u2f_register_apdu(challenge, app_id))
-        self.assertEqual(SW_FILE_FULL, _sw(resp))
+        self.assertEqual(SW_COMMAND_NOT_ALLOWED, _sw(resp))
 
         self.ctap2.make_credential(**self.basic_makecred_params)
         challenge = secrets.token_bytes(32)
         resp = self.u2f_transmit(build_u2f_register_apdu(challenge, app_id))
-        self.assertEqual(SW_FILE_FULL, _sw(resp))
+        self.assertEqual(SW_COMMAND_NOT_ALLOWED, _sw(resp))
 
     def test_u2f_authenticate_no_resident_key(self):
         select_fido_applet(self.u2f_transmit)
@@ -156,6 +156,8 @@ class U2FAuthenticateTestCase(BasicAttestationTestCase):
         self.assertEqual(SW_WRONG_LENGTH, _sw(resp))
 
     def test_u2f_authenticate_check_only(self):
+        # U2F spec: check-only with a key handle this token accepts must answer
+        # SW_CONDITIONS_NOT_SATISFIED ("test-of-user-presence required"), never 0x9000.
         self.ctap2.make_credential(**self.basic_makecred_params)
         select_fido_applet(self.u2f_transmit)
         challenge = secrets.token_bytes(32)
@@ -163,7 +165,7 @@ class U2FAuthenticateTestCase(BasicAttestationTestCase):
         key_handle = secrets.token_bytes(CREDENTIAL_ID_LEN)
         apdu = build_u2f_authenticate_apdu(challenge, app_id, key_handle, p1=0x07)
         resp = self.u2f_transmit(apdu)
-        self.assertEqual(SW_NO_ERROR, _sw(resp))
+        self.assertEqual(SW_CONDITIONS_NOT_SATISFIED, _sw(resp))
         self.assertEqual(b"", resp[:-2])
 
     def test_u2f_authenticate_signs_with_resident_key(self):

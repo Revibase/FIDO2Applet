@@ -34,22 +34,20 @@ public abstract class CannedCBOR {
             0x50, // byte string, 16 bytes long
     };
 
-    /** getInfo map key 0x04 (options): rk/up true; uv/clientPin explicitly false for Android NFC. */
+    /**
+     * getInfo map key 0x04 (options): rk/up true. uv and clientPin are absent, not false:
+     * per CTAP2.0, present-but-false means "supported but not configured", which would
+     * invite platforms to try SetPIN / built-in UV that this authenticator cannot do.
+     */
     static final byte[] AUTH_INFO_LITE_OPTIONS = {
             0x04, // map key: options
-            (byte) 0xA4, // map: four entries
+            (byte) 0xA2, // map: two entries
                 0x62, // string: two bytes long
                     0x72, 0x6B, // rk
                     (byte) 0xF5, // true
                 0x62, // string: two bytes long
                     0x75, 0x70, // up
                     (byte) 0xF5, // true (NFC tap satisfies user presence)
-                0x62, // string: two bytes long
-                    0x75, 0x76, // uv
-                    (byte) 0xF4, // false
-                0x69, // string: nine bytes long
-                    0x63, 0x6C, 0x69, 0x65, 0x6E, 0x74, 0x50, 0x69, 0x6E, // clientPin
-                    (byte) 0xF4, // false
     };
 
     static final byte[] MAKE_CREDENTIAL_RESPONSE_PREAMBLE = {
