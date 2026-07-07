@@ -23,9 +23,6 @@ import javacardx.crypto.Cipher;
 
 import org.openjavacard.ndef.stub.NdefKeyStore;
 
-/**
- * Slim FIDO2 CTAP2 applet: resident-key-only, no PIN/U2F/cred-mgmt.
- */
 public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     private static final byte FIRMWARE_VERSION = 0x08;
@@ -36,7 +33,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     };
 
     private boolean attestationSwitchingEnabled;
-    private byte CERTIFICATION_LEVEL;
     /** Scratch for decrypting credential material before pushing to NdefApplet (CLEAR_ON_DESELECT). */
     private byte[] ndefPushScratch;
     private static final byte[] NDEF_CLIENT_AID = {
@@ -168,6 +164,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     private void loadWrappingKey() {
         lowSecurityWrappingKey.setKey(wrappingKeySpace, (short) 0);
+    }
+
+    /** U2F authenticate requires a provisioned attestation certificate chain. */
+    private boolean isU2fProvisioned() {
+        return attestationData != null && filledAttestationData >= attestationData.length;
     }
 
     private short processOptionsMap(APDU apdu, byte[] buffer, short readIdx, short lc, boolean requireRK) {
@@ -442,7 +443,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
         }
         bufferManager.clear();
-        sendByteArray(apdu, CannedCBOR.FIDO_2_RESPONSE, (short) CannedCBOR.FIDO_2_RESPONSE.length);
+        if (isU2fProvisioned()) {
+            sendByteArray(apdu, CannedCBOR.U2F_V2_RESPONSE, (short) CannedCBOR.U2F_V2_RESPONSE.length);
+        } else {
+            sendByteArray(apdu, CannedCBOR.FIDO_2_RESPONSE, (short) CannedCBOR.FIDO_2_RESPONSE.length);
+        }
     }
 
     private void initTransientStorage(APDU apdu) {
@@ -460,30 +465,25 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private void sendAuthInfo(APDU apdu) {
         byte[] buffer = apdu.getBuffer();
         short offset = 0;
-        boolean includeMaxMsgSize = bufferMem.length != 1024;
-        boolean includeCertifications = CERTIFICATION_LEVEL > 0;
-        byte mapEntries = 7;
-        if (includeMaxMsgSize) {
-            mapEntries++;
-        }
-        if (includeCertifications) {
-            mapEntries++;
-        }
+        final byte mapEntries = 7;
         buffer[offset++] = FIDOConstants.CTAP2_OK;
         buffer[offset++] = (byte) (0xA0 + mapEntries);
         buffer[offset++] = 0x01;
-        offset = Util.arrayCopyNonAtomic(CannedCBOR.VERSIONS_WITHOUT_U2F, (short) 0,
-                buffer, offset, (short) CannedCBOR.VERSIONS_WITHOUT_U2F.length);
+        if (isU2fProvisioned()) {
+            offset = Util.arrayCopyNonAtomic(CannedCBOR.VERSIONS_WITH_U2F, (short) 0,
+                    buffer, offset, (short) CannedCBOR.VERSIONS_WITH_U2F.length);
+        } else {
+            offset = Util.arrayCopyNonAtomic(CannedCBOR.VERSIONS_WITHOUT_U2F, (short) 0,
+                    buffer, offset, (short) CannedCBOR.VERSIONS_WITHOUT_U2F.length);
+        }
         offset = Util.arrayCopyNonAtomic(CannedCBOR.AUTH_INFO_LITE_AAGUID, (short) 0,
                 buffer, offset, (short) CannedCBOR.AUTH_INFO_LITE_AAGUID.length);
         offset = Util.arrayCopyNonAtomic(aaguid, (short) 0, buffer, offset, (short) aaguid.length);
         offset = Util.arrayCopyNonAtomic(CannedCBOR.AUTH_INFO_LITE_OPTIONS, (short) 0,
                 buffer, offset, (short) CannedCBOR.AUTH_INFO_LITE_OPTIONS.length);
-        if (includeMaxMsgSize) {
-            buffer[offset++] = 0x05;
-            buffer[offset++] = 0x19;
-            offset = Util.setShort(buffer, offset, (short) bufferMem.length);
-        }
+        buffer[offset++] = 0x05;
+        buffer[offset++] = 0x19;
+        offset = Util.setShort(buffer, offset, (short) bufferMem.length);
         buffer[offset++] = 0x08;
         offset = encodeIntTo(buffer, offset, (byte) CREDENTIAL_ID_LEN);
         buffer[offset++] = 0x0A;
@@ -491,14 +491,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 buffer, offset, (short) CannedCBOR.ES256_ALG_TYPE.length);
         buffer[offset++] = 0x0E;
         offset = encodeIntTo(buffer, offset, FIRMWARE_VERSION);
-        if (includeCertifications) {
-            buffer[offset++] = 0x13;
-            offset = Util.arrayCopyNonAtomic(CannedCBOR.FIDO_CERT_LEVEL, (short) 0,
-                    buffer, offset, (short) CannedCBOR.FIDO_CERT_LEVEL.length);
-            buffer[offset++] = CERTIFICATION_LEVEL;
-        }
-        buffer[offset++] = 0x14;
-        offset = encodeIntTo(buffer, offset, getApproximateRemainingKeyCount());
         sendNoCopy(apdu, offset);
     }
 
@@ -595,8 +587,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         readIdx = requireEs256PubKeyParams(apdu, buffer, readIdx, lc, pubKeyCredParamsType);
         defaultOptions();
-        short excludeListStartIdx = -1;
-        short numExcludeListEntries = 0;
         byte lastMapKey = 0x04;
         for (short i = 4; i < numParameters; i++) {
             if (readIdx >= lc) {
@@ -607,14 +597,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             lastMapKey = buffer[readIdx];
             switch (buffer[readIdx++]) {
-                case 0x05:
-                    short excludeListTypeVal = ub(buffer[readIdx]);
-                    if (!(excludeListTypeVal >= 0x0080 && excludeListTypeVal <= 0x0097)) {
-                        sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
-                    }
-                    numExcludeListEntries = (short) (excludeListTypeVal - 0x80);
-                    excludeListStartIdx = (short) (readIdx + 1);
-                    break;
                 case 0x07:
                     readIdx = processOptionsMap(apdu, buffer, readIdx, lc, true);
                     continue;
@@ -626,6 +608,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             readIdx = skipCborValue(apdu, buffer, readIdx, lc);
         }
+        if (!transientStorage.hasRKOption()) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_OPTION);
+        }
         loadWrappingKey();
         final short scratchRPIDHashHandle = bufferManager.allocate(apdu, RP_HASH_LEN, BufferManager.ANYWHERE);
         final short scratchRPIDHashOffset = bufferManager.getOffsetForHandle(scratchRPIDHashHandle);
@@ -634,28 +619,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         final short scratchCredHandle = bufferManager.allocate(apdu, CREDENTIAL_ID_LEN, BufferManager.NOT_APDU_BUFFER);
         final short scratchCredOffset = bufferManager.getOffsetForHandle(scratchCredHandle);
         final byte[] scratchCredBuffer = bufferManager.getBufferForHandle(apdu, scratchCredHandle);
-        if (numExcludeListEntries > 0) {
-            boolean willExclude = false;
-            short excludeReadIdx = excludeListStartIdx;
-            for (short excludeListIdx = 0; excludeListIdx < numExcludeListEntries; excludeListIdx++) {
-                excludeReadIdx = readCredDescriptorMap(apdu, buffer, excludeReadIdx, lc, true);
-                if (willExclude) {
-                    continue;
-                }
-                final short credIdIdx = transientStorage.getStoredIdx();
-                final short credIdLen = transientStorage.getStoredLen();
-                if (credIdLen != CREDENTIAL_ID_LEN) {
-                    continue;
-                }
-                if (checkCredential(apdu, buffer, credIdIdx, CREDENTIAL_ID_LEN,
-                        scratchCredBuffer, scratchCredOffset)) {
-                    willExclude = true;
-                }
-            }
-            if (willExclude) {
-                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CREDENTIAL_EXCLUDED);
-            }
-        }
         if (numResidentCredentials > 0 && residentKeys[0] != null) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_LIMIT_EXCEEDED);
         }
@@ -780,7 +743,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         final short credStorageHandle = bufferManager.allocate(apdu, CREDENTIAL_ID_LEN, BufferManager.NOT_APDU_BUFFER);
         final short credStorageOffset = bufferManager.getOffsetForHandle(credStorageHandle);
         final byte[] credStorageBuffer = bufferManager.getBufferForHandle(apdu, credStorageHandle);
-        boolean acceptedMatch = false;
         short rkMatch = -1;
         if (lc == 0) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
@@ -817,59 +779,27 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         Util.arrayCopyNonAtomic(buffer, readIdx, clientDataHashBuffer, clientDataHashIdx, CLIENT_DATA_HASH_LEN);
         readIdx += CLIENT_DATA_HASH_LEN;
         sha256.doFinal(buffer, rpIdIdx, rpIdLen, scratchRPIDHashBuffer, scratchRPIDHashIdx);
-        short allowListIdx = -1;
-        short paramsRead = 2;
-        if (numParams > 2 && buffer[readIdx] == 0x03) {
-            readIdx++;
-            allowListIdx = readIdx;
-            paramsRead++;
-            readIdx = skipCborValue(apdu, buffer, readIdx, lc);
-        }
         defaultOptions();
-        byte lastMapKey = 0x03;
-        for (short i = paramsRead; i < numParams; i++) {
-            byte mapKey = buffer[readIdx++];
-            if (mapKey <= lastMapKey) {
+        byte lastMapKey = 0x02;
+        for (short i = 2; i < numParams; i++) {
+            if (readIdx >= lc) {
+                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
+            }
+            if (buffer[readIdx] <= lastMapKey) {
                 sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
             }
-            lastMapKey = mapKey;
-            if (mapKey == 0x05) {
-                readIdx = processOptionsMap(apdu, buffer, readIdx, lc, false);
-            } else {
-                readIdx = skipCborValue(apdu, buffer, readIdx, lc);
+            lastMapKey = buffer[readIdx];
+            switch (buffer[readIdx++]) {
+                case 0x05:
+                    readIdx = processOptionsMap(apdu, buffer, readIdx, lc, false);
+                    continue;
+                default:
+                    break;
             }
+            readIdx = skipCborValue(apdu, buffer, readIdx, lc);
         }
         loadWrappingKey();
-        if (allowListIdx != -1) {
-            short blockReadIdx = allowListIdx;
-            short allowListLength = ub(buffer[blockReadIdx++]);
-            if (allowListLength < 0x0080 || allowListLength > 0x0097) {
-                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
-            }
-            allowListLength -= 0x0080;
-            for (short i = 0; i < allowListLength; i++) {
-                blockReadIdx = readCredDescriptorMap(apdu, buffer, blockReadIdx, lc, true);
-                if (acceptedMatch) {
-                    continue;
-                }
-                final short credIdx = transientStorage.getStoredIdx();
-                final short credLen = transientStorage.getStoredLen();
-                if (credLen != CREDENTIAL_ID_LEN) {
-                    continue;
-                }
-                if (checkCredential(apdu, buffer, credIdx, credLen,
-                        credStorageBuffer, credStorageOffset)) {
-                    rkMatch = scanRKsForExactCredential(buffer, credIdx);
-                    if (rkMatch < 0) {
-                        rkMatch = 0;
-                    }
-                    acceptedMatch = true;
-                    loadScratchIntoAttester(credStorageBuffer, credStorageOffset);
-                    Util.arrayCopyNonAtomic(buffer, credIdx, credStorageBuffer, credStorageOffset, credLen);
-                }
-            }
-        }
-        if (!acceptedMatch && numResidentCredentials > 0 && residentKeys[0] != null) {
+        if (numResidentCredentials > 0 && residentKeys[0] != null) {
             short credTempHandle = bufferManager.allocate(apdu, CREDENTIAL_PAYLOAD_LEN, BufferManager.ANYWHERE);
             short credTempOffset = bufferManager.getOffsetForHandle(credTempHandle);
             byte[] credTempBuffer = bufferManager.getBufferForHandle(apdu, credTempHandle);
@@ -879,11 +809,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 loadScratchIntoAttester(credTempBuffer, credTempOffset);
                 Util.arrayCopyNonAtomic(residentKeys[0].getEncryptedCredentialID(), (short) 0,
                         credStorageBuffer, credStorageOffset, residentKeys[0].getCredLen());
-                acceptedMatch = true;
             }
             bufferManager.release(apdu, credTempHandle, CREDENTIAL_PAYLOAD_LEN);
         }
-        if (!acceptedMatch) {
+        if (rkMatch < 0) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_NO_CREDENTIALS);
         }
         byte[] outputBuffer = bufferMem;
@@ -1289,77 +1218,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return readIdx;
     }
 
-    private short readCredDescriptorMap(APDU apdu, byte[] buffer, short readIdx, short lc,
-            boolean requirePublicKeyType) {
-        transientStorage.readyStoredVars();
-        short mapDef = ub(buffer[readIdx++]);
-        short mapEntryCount;
-        if ((mapDef & 0xF0) == 0xA0) {
-            mapEntryCount = (short) (mapDef & 0x0F);
-        } else if ((mapDef & 0xF0) == 0xB0 && mapDef < ub((byte) 0xB8)) {
-            mapEntryCount = (short) ((mapDef & 0x0F) + 16);
-        } else if (mapDef == (byte) 0xB8) {
-            if (readIdx >= lc) {
-                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
-            }
-            mapEntryCount = ub(buffer[readIdx++]);
-        } else {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
-            return readIdx;
-        }
-
-        boolean foundId = false;
-        boolean correctType = !requirePublicKeyType;
-        for (short i = 0; i < mapEntryCount; i++) {
-            byte keyDef = buffer[readIdx];
-            short keyLen = readCborStrKeyLen(apdu, buffer, readIdx, lc);
-            short keyIdx = cborTextKeyContentIdx(readIdx, keyDef);
-            readIdx = (short) (keyIdx + keyLen);
-            final boolean isId = (keyLen == 2 && buffer[keyIdx] == 'i' && buffer[(short) (keyIdx + 1)] == 'd');
-            final boolean isType = (keyLen == 4 && buffer[keyIdx] == 't' && buffer[(short) (keyIdx + 1)] == 'y'
-                    && buffer[(short) (keyIdx + 2)] == 'p' && buffer[(short) (keyIdx + 3)] == 'e');
-            short valIdx = readIdx;
-            readIdx = skipCborValue(apdu, buffer, readIdx, lc);
-            short valDef = ub(buffer[valIdx]);
-            short valLen;
-            short valStart;
-            if (valDef >= 0x0040 && valDef < 0x0058) {
-                valLen = (short) (valDef - 0x0040);
-                valStart = (short) (valIdx + 1);
-            } else if (valDef == 0x0058) {
-                valLen = ub(buffer[(short) (valIdx + 1)]);
-                valStart = (short) (valIdx + 2);
-            } else if (valDef >= 0x0060 && valDef < 0x0078) {
-                valLen = (short) (valDef - 0x0060);
-                valStart = (short) (valIdx + 1);
-            } else if (valDef == 0x0078) {
-                valLen = ub(buffer[(short) (valIdx + 1)]);
-                valStart = (short) (valIdx + 2);
-            } else {
-                continue;
-            }
-            if (isId && valDef >= 0x0040 && valDef <= 0x0058) {
-                if (valLen > 255) {
-                    sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_REQUEST_TOO_LARGE);
-                }
-                foundId = true;
-                transientStorage.setStoredVars(valStart, (byte) valLen);
-            } else if (isType && requirePublicKeyType && valDef >= 0x0060 && valDef <= 0x0078) {
-                correctType = valLen == (short) CannedCBOR.PUBLIC_KEY_TYPE.length
-                        && Util.arrayCompare(buffer, valStart,
-                                CannedCBOR.PUBLIC_KEY_TYPE, (short) 0, valLen) == 0;
-            }
-        }
-
-        if (!foundId) {
-            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_INVALID_PARAMETER);
-        }
-        if (requirePublicKeyType && !correctType) {
-            transientStorage.readyStoredVars();
-        }
-        return readIdx;
-    }
-
     private short requireEs256PubKeyParams(APDU apdu, byte[] buffer, short readIdx, short lc, byte arrayType) {
         final short numPubKeys = (short) (arrayType & 0x0F);
         boolean foundEs256 = false;
@@ -1553,34 +1411,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             throwException((short) (ISO7816.SW_BYTES_REMAINING_00 + remaining), false);
         }
     }
-/**
-     * Checks if a particular credential ID (as a byte string) is present and valid
-     * in our RK set
-     *
-     * @param buffer  Buffer containing encoded credential ID
-     * @param credIdx Index of credential ID in input buffer
-     *
-     * @return index of RK if credential is present, valid, and its level usable
-     *         with the
-     *         amount of PIN auth performed; negative number otherwise
-     */
-    private short scanRKsForExactCredential(byte[] buffer, short credIdx) {
-        short found = -1;
-        for (short i = 0; i < (short) residentKeys.length; i++) {
-            if (residentKeys[i] == null) {
-                continue;
-            }
-            if (residentKeys[i].getCredLen() == CREDENTIAL_ID_LEN
-                    && SecureCompare.eq(buffer, credIdx,
-                    residentKeys[i].getEncryptedCredentialID(), (short) 0, CREDENTIAL_ID_LEN)) {
-                if (found == -1) {
-                    found = i;
-                }
-            }
-        }
-        return found;
-    }
-/**
+    /**
      * Pack a credential ID (CBOR-wrapped) into a target buffer
      *
      * @param credBuffer  Buffer containing credential ID
@@ -1631,18 +1462,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             writeOffset = Util.setShort(outBuf, writeOffset, v);
         }
         return writeOffset;
-    }
-/**
-     * Returns the approximate number of discoverable credentials that may still be
-     * created
-     *
-     * @return Estimated number of creds
-     */
-    private byte getApproximateRemainingKeyCount() {
-        if (numResidentCredentials > 0 && residentKeys[0] != null) {
-            return 0;
-        }
-        return 1;
     }
 /**
      * Gets an EC sig object
@@ -1945,6 +1764,34 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             return;
         }
+        
+        if (cla_ins == 0x0001) {
+            transientStorage.clearOutgoingContinuation();
+            // Single resident-key slot is full; U2F clients only handle ISO7816 SW codes.
+            throwException(ISO7816.SW_FILE_FULL);
+            return;
+        }else if (cla_ins == 0x0002) {
+            transientStorage.clearOutgoingContinuation();
+            if (apduBytes[ISO7816.OFFSET_P2] != 0x00) {
+                throwException(ISO7816.SW_INCORRECT_P1P2);
+            }
+            byte p1 = apduBytes[ISO7816.OFFSET_P1];
+            if (p1 != 0x03 && p1 != 0x07 && p1 != 0x08) {
+                throwException(ISO7816.SW_INCORRECT_P1P2);
+            }
+            u2FAuthenticate(apdu, p1);
+            return;
+        } else if (cla_ins == 0x0003) {
+            // U2F VERSION
+            if (p1_p2 != 0x0000) {
+                throwException(ISO7816.SW_INCORRECT_P1P2);
+            }
+            apdu.setIncomingAndReceive();
+            sendByteArray(apdu, CannedCBOR.U2F_V2_RESPONSE,
+                    (short) CannedCBOR.U2F_V2_RESPONSE.length);
+            return;
+        }
+
         if (apduBytes[ISO7816.OFFSET_CLA] != (byte) 0x80) {
             throwException(ISO7816.SW_CLA_NOT_SUPPORTED);
         }
@@ -1957,7 +1804,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         final short amtRead = apdu.setIncomingAndReceive();
         final short lc = apdu.getIncomingLength();
-        if (amtRead == 0) {
+      if (amtRead == 0) {
             throwException(ISO7816.SW_DATA_INVALID);
         }
         short lcEffective = (short) (lc + 1);
@@ -1983,7 +1830,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 getAssertion(apdu, lcEffective, reqBuffer);
                 break;
             case FIDOConstants.CMD_INSTALL_CERTS:
-                boolean extended = isExtendedApdu(apdu);
+                 boolean extended = isExtendedApdu(apdu);
                 short apOffset;
                 lcEffective = (short) (lc - 5);
                 reqBuffer = fullyReadReq(apdu, lc, amtRead, !extended);
@@ -2009,6 +1856,88 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         transientStorage.clearOnDeselect();
     }
 
+     private void u2FAuthenticate(APDU apdu, byte p1) {
+        if (!isU2fProvisioned()) {
+            // Authenticating requires an attestation certificate!
+            throwException(ISO7816.SW_COMMAND_NOT_ALLOWED);
+        }
+
+        short amtRead = apdu.setIncomingAndReceive();
+        short lc = apdu.getIncomingLength();
+        final byte[] reqBuffer = fullyReadReq(apdu, lc, amtRead, true);
+
+        final short clientDataHashOffset = 0;
+        final short rpIdHashOffset = (short) (clientDataHashOffset + CLIENT_DATA_HASH_LEN);
+        final short credIdLenOffset = (short) (rpIdHashOffset + RP_HASH_LEN);
+        final short credIdOffset = (short) (credIdLenOffset + 1);
+        final short minLc = (short) (credIdOffset - clientDataHashOffset);
+        if (lc < minLc) {
+            throwException(ISO7816.SW_WRONG_LENGTH);
+        }
+        final short credIdLen = ub(reqBuffer[credIdLenOffset]);
+        if (lc != (short) (minLc + credIdLen)) {
+            throwException(ISO7816.SW_WRONG_LENGTH);
+        }
+
+        if (numResidentCredentials == 0 || residentKeys[0] == null) {
+            throwException(ISO7816.SW_WRONG_DATA);
+        }
+
+        final short scratchCredHandle = bufferManager.allocate(apdu, CREDENTIAL_PAYLOAD_LEN,
+                BufferManager.NOT_APDU_BUFFER);
+        final short scratchCredOffset = bufferManager.getOffsetForHandle(scratchCredHandle);
+        final byte[] scratchCredBuffer = bufferManager.getBufferForHandle(apdu, scratchCredHandle);
+
+        loadWrappingKey();
+        if (!checkCredential(apdu, (short) 0, scratchCredBuffer, scratchCredOffset)) {
+            bufferManager.release(apdu, scratchCredHandle, CREDENTIAL_PAYLOAD_LEN);
+            throwException(ISO7816.SW_WRONG_DATA);
+        }
+
+        if (p1 == 0x07) {
+            // Check-only: key handle accepted, no signature (U2F spec §4.2).
+            bufferManager.release(apdu, scratchCredHandle, CREDENTIAL_PAYLOAD_LEN);
+            sendNoCopy(apdu, (short) 0);
+            return;
+        }
+
+        loadScratchIntoAttester(scratchCredBuffer, scratchCredOffset);
+
+        final byte flag_byte = 0x01; // User always present
+
+        final short scratchSigHandle = bufferManager.allocate(apdu,
+                (short) (RP_HASH_LEN + CLIENT_DATA_HASH_LEN + 5), BufferManager.NOT_APDU_BUFFER);
+        final short scratchSigOffset = bufferManager.getOffsetForHandle(scratchSigHandle);
+        final byte[] scratchSigBuffer = bufferManager.getBufferForHandle(apdu, scratchSigHandle);
+
+        random.generateData(scratchSigBuffer, scratchSigOffset, (short) 1);
+        counter.increment((short) ((scratchSigBuffer[scratchSigOffset] & 0x0E) + 1));
+
+        final short sigRPIDOffset = scratchSigOffset;
+        final short sigFlagsByteOffset = (short) (sigRPIDOffset + RP_HASH_LEN);
+        final short sigCounterOffset = (short) (sigFlagsByteOffset + 1);
+        final short sigClientDataOffset = (short) (sigCounterOffset + 4);
+
+        Util.arrayCopyNonAtomic(reqBuffer, rpIdHashOffset,
+                scratchSigBuffer, sigRPIDOffset, RP_HASH_LEN);
+        scratchSigBuffer[sigFlagsByteOffset] = flag_byte;
+        counter.pack(scratchSigBuffer, sigCounterOffset);
+        Util.arrayCopyNonAtomic(reqBuffer, clientDataHashOffset,
+                scratchSigBuffer, sigClientDataOffset, CLIENT_DATA_HASH_LEN);
+
+        final byte[] apduBuf = apdu.getBuffer();
+        final short sigLen = attester.sign(scratchSigBuffer, sigRPIDOffset,
+                (short) (RP_HASH_LEN + CLIENT_DATA_HASH_LEN + 5),
+                apduBuf, (short) 5);
+
+        apduBuf[0] = flag_byte;
+        counter.pack(apduBuf, (short) 1);
+        bufferManager.release(apdu, scratchCredHandle, CREDENTIAL_PAYLOAD_LEN);
+        bufferManager.release(apdu, scratchSigHandle,
+                (short) (RP_HASH_LEN + CLIENT_DATA_HASH_LEN + 5));
+        sendNoCopy(apdu, (short) (sigLen + 5));
+    }
+
 
     public static void install(byte[] array, short offset, byte length) throws ISOException {
         if (length > 0) {
@@ -2030,7 +1959,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         MAX_RAM_SCRATCH_SIZE = 512;
         BUFFER_MEM_SIZE = 2048;
         FLASH_SCRATCH_SIZE = 1024;
-        CERTIFICATION_LEVEL = 0;
         final short initOffset = offset;
         if (length > 0) {
             short sb = ub(array[offset++]);
@@ -2074,9 +2002,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         } else {
                             ISOException.throwIt(ISO7816.SW_DATA_INVALID);
                         }
-                        break;
-                    case 0x0E:
-                        CERTIFICATION_LEVEL = array[offset++];
                         break;
                     case 0x0F:
                         if (array[offset++] != 0x58 || array[offset++] != 0x20) {

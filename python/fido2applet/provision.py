@@ -40,7 +40,6 @@ FIDO_INSTALL_FLAGS: dict[str, tuple[str, str]] = {
     "max_ram_scratch": ("--max-ram-scratch", "int"),
     "buffer_mem": ("--buffer-mem", "int"),
     "flash_scratch": ("--flash-scratch", "int"),
-    "certification_level": ("--certification-level", "int"),
     "attestation_private_key": ("--attestation-private-key", "str"),
 }
 

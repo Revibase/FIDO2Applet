@@ -19,6 +19,13 @@ class CTAPBasicAttestationTestCase(BasicAttestationTestCase):
         info = self.ctap2.get_info()
         self.assertEqual(self.aaguid, info.aaguid)
 
+    def test_info_includes_u2f_after_attestation(self):
+        info = self.ctap2.get_info()
+        self.assertEqual(
+            ["U2F_V2", "FIDO_2_0"],
+            info.versions,
+        )
+
     def test_cert_attestation(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         self.assertEqual("packed", cred_res.fmt)

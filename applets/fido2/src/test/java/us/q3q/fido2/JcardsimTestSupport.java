@@ -35,6 +35,11 @@ public final class JcardsimTestSupport {
                     + "7573657231646e616d6564757365726b646973706c61794e616d6564557365720481"
                     + "a263616c672664747970656a7075626c69632d6b657907a162726bf5");
 
+    /** getAssertion for example.com with zero clientDataHash. */
+    public static final byte[] GET_ASSERTION_CBOR = hexToBytes(
+            "02a2016b6578616d706c652e636f6d025820"
+                    + "0000000000000000000000000000000000000000000000000000000000000000");
+
     private JcardsimTestSupport() {
     }
 

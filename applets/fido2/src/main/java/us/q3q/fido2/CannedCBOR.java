@@ -8,15 +8,24 @@ public abstract class CannedCBOR {
             0x46, 0x49, 0x44, 0x4F, 0x5F, 0x32, 0x5F, 0x30
           //   F     I     D     O     _     2     _     0
     };
+    static final byte[] U2F_V2_RESPONSE = {
+            0x55, 0x32, 0x46, 0x5F, 0x56, 0x32
+          //   U     2     F     _     V     2
+    };
 
-    static final byte[] VERSIONS_WITHOUT_U2F = {
-            (byte) 0x83, // array - three items
+    static final byte[] VERSIONS_WITH_U2F = {
+            (byte) 0x82, // array - two items
+                0x66, // string - six bytes long
+                    0x55, 0x32, 0x46, 0x5F, 0x56, 0x32, // U2F_V2
                 0x68, // string - eight bytes long
                     0x46, 0x49, 0x44, 0x4F, 0x5F, 0x32, 0x5F, 0x30, // FIDO_2_0
+    };
+
+    /** getInfo versions when U2F is not yet provisioned (no attestation certificate). */
+    static final byte[] VERSIONS_WITHOUT_U2F = {
+            (byte) 0x81, // array - one item
                 0x68, // string - eight bytes long
-                    0x46, 0x49, 0x44, 0x4F, 0x5F, 0x32, 0x5F, 0x31, // FIDO_2_1
-                0x6C, // string - twelve bytes long
-                    0x46, 0x49, 0x44, 0x4F, 0x5F, 0x32, 0x5F, 0x31, 0x5F, 0x50, 0x52, 0x45, // FIDO_2_1_PRE
+                    0x46, 0x49, 0x44, 0x4F, 0x5F, 0x32, 0x5F, 0x30, // FIDO_2_0
     };
 
     /** getInfo map key 0x03 (aaguid) preamble: 16-byte byte string follows */
@@ -25,20 +34,21 @@ public abstract class CannedCBOR {
             0x50, // byte string, 16 bytes long
     };
 
-    /** getInfo map key 0x04 (options): rk/up/alwaysUv (canonical string order).
-     * clientPin is intentionally omitted: the applet implements no authenticatorClientPIN
-     * command, and per CTAP2.1 the option must be absent (not false) when PIN is unsupported. */
+    /** getInfo map key 0x04 (options): rk/up true; uv/clientPin explicitly false for Android NFC. */
     static final byte[] AUTH_INFO_LITE_OPTIONS = {
             0x04, // map key: options
-            (byte) 0xA3, // map: three entries
+            (byte) 0xA4, // map: four entries
                 0x62, // string: two bytes long
                     0x72, 0x6B, // rk
                     (byte) 0xF5, // true
                 0x62, // string: two bytes long
                     0x75, 0x70, // up
                     (byte) 0xF5, // true (NFC tap satisfies user presence)
-                0x68, // string: eight bytes long
-                    0x61, 0x6C, 0x77, 0x61, 0x79, 0x73, 0x55, 0x76, // alwaysUv
+                0x62, // string: two bytes long
+                    0x75, 0x76, // uv
+                    (byte) 0xF4, // false
+                0x69, // string: nine bytes long
+                    0x63, 0x6C, 0x69, 0x65, 0x6E, 0x74, 0x50, 0x69, 0x6E, // clientPin
                     (byte) 0xF4, // false
     };
 
@@ -78,12 +88,6 @@ public abstract class CannedCBOR {
                     0x26, // integer (-7) - means ES256 algorithm
                 0x63, // string: three characters
                     0x73, 0x69, 0x67, // sig
-    };
-
-    static final byte[] FIDO_CERT_LEVEL = {
-            (byte) 0xA1, // map with one entry
-            0x64, // string - four bytes long
-                0x46, 0x49, 0x44, 0x4F, // FIDO
     };
 
     static final byte[] X5C = {

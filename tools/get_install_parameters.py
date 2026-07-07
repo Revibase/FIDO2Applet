@@ -9,7 +9,6 @@ INSTALL_OPTIONS = [
     ("max_ram_scratch", 0x09, "int"),
     ("buffer_mem", 0x0A, "int"),
     ("flash_scratch", 0x0B, "int"),
-    ("certification_level", 0x0E, "int"),
     ("attestation_private_key", 0x0F, "bytes"),
 ]
 
@@ -28,8 +27,6 @@ if __name__ == '__main__':
     parser.add_argument('--flash-scratch', type=int, default=None,
                         help="Flash scratch when RAM is exhausted (bytes). Keep as small as testAll "
                              "allows; each CTAP op may rewrite these cells.")
-    parser.add_argument('--certification-level', type=int, default=None,
-                        help="FIDO Alliance certification level for getInfo")
     parser.add_argument('--attestation-private-key',
                         help="Base64-encoded 32-byte attestation private key (implies --enable-attestation)")
 

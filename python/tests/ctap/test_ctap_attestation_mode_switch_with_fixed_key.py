@@ -16,8 +16,9 @@ class AttestationModeSwitchWithFixedKeyTestCase(BasicAttestationTestCase):
 
         super().setUp(bytes([0xA2, 0x00, 0xF5, 0x0F, 0x58, 0x20]) + private_bytes)
 
-    def test_fido_versions_unchanged_after_switch(self):
+    def test_fido_versions_gain_u2f_after_switch(self):
         info_before = self.ctap2.get_info()
+        self.assertNotIn("U2F_V2", info_before.versions)
 
         cert_bytes = secrets.token_bytes(100)
         cert = self.gen_attestation_cert(cert_bytes=[cert_bytes], public_key=self.public_key)
@@ -27,5 +28,7 @@ class AttestationModeSwitchWithFixedKeyTestCase(BasicAttestationTestCase):
         )
 
         info_after = self.ctap2.get_info()
-        self.assertEqual(info_before.versions, info_after.versions)
-        self.assertIn("FIDO_2_0", info_after.versions)
+        self.assertEqual(
+            ["U2F_V2", "FIDO_2_0"],
+            info_after.versions,
+        )

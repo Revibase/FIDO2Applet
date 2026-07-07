@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static us.q3q.fido2.JcardsimTestSupport.FIDO_AID;
 import static us.q3q.fido2.JcardsimTestSupport.FIDO_DEFAULT_INSTALL_PARAMS;
+import static us.q3q.fido2.JcardsimTestSupport.GET_ASSERTION_CBOR;
 import static us.q3q.fido2.JcardsimTestSupport.MAKE_CREDENTIAL_CBOR;
 import static us.q3q.fido2.JcardsimTestSupport.NDEF_AID;
 import static us.q3q.fido2.JcardsimTestSupport.NDEF_URL_INSTALL_PARAMS;
@@ -57,6 +58,19 @@ public class ExtendedApduTest {
         assertEquals(0x00, response.getData()[0] & 0xFF);
         assertTrue(response.getData().length > 100,
                 "extended response should include full attestation CBOR");
+    }
+
+    @Test
+    public void getAssertionViaExtendedApdu() {
+        ResponseAPDU makeCred = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
+        assertEquals(0x9000, makeCred.getSW());
+        assertEquals(0x00, makeCred.getData()[0] & 0xFF);
+
+        ResponseAPDU assertion = sendCtap(simulator, GET_ASSERTION_CBOR);
+        assertEquals(0x9000, assertion.getSW());
+        assertEquals(0x00, assertion.getData()[0] & 0xFF);
+        assertTrue(assertion.getData().length > 50,
+                "extended getAssertion should return signature and auth data");
     }
 
     @Test

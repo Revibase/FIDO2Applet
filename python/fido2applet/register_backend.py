@@ -58,11 +58,9 @@ def register_card_with_backend(
             "re-run from --from-step make_credential"
         )
 
-    asset_type = reg.get("asset_type") or reg.get("assetType")
+    asset_type = reg.get("asset_type")
     if asset_type is None:
-        raise ValueError(
-            "register.asset_type is required for backend registration"
-        )
+        asset_type = reg.get("assetType")
 
     secret = reg.get("secret") or os.environ.get("OPERATOR_SECRET")
     if not secret and not dry_run:

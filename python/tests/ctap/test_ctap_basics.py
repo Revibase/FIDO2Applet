@@ -11,7 +11,14 @@ from .ctap_test import CTAPTestCase
 class CTAPBasicsTestCase(CTAPTestCase):
     def test_info_supported_versions(self):
         info = self.ctap2.get_info()
-        self.assertEqual(["FIDO_2_0", "FIDO_2_1", "FIDO_2_1_PRE"], info.versions)
+        self.assertEqual(
+            ["FIDO_2_0"],
+            info.versions,
+        )
+
+    def test_info_omits_u2f_without_attestation(self):
+        info = self.ctap2.get_info()
+        self.assertNotIn("U2F_V2", info.versions)
 
     def test_info_supported_extensions(self):
         info = self.ctap2.get_info()
@@ -20,10 +27,16 @@ class CTAPBasicsTestCase(CTAPTestCase):
     def test_info_supported_options(self):
         info = self.ctap2.get_info()
         self.assertEqual({
-            "alwaysUv": False,
             "rk": True,
             "up": True,
+            "uv": False,
+            "clientPin": False,
         }, info.options)
+        for unsupported in (
+            "alwaysUv", "pinUvAuthToken", "makeCredUvNotRqd",
+            "credMgmt", "credentialMgmtPreview", "largeBlobs", "bioEnroll", "ep", "plat",
+        ):
+            self.assertNotIn(unsupported, info.options)
 
     def test_info_aaguid_none(self):
         info = self.ctap2.get_info()
@@ -48,6 +61,18 @@ class CTAPBasicsTestCase(CTAPTestCase):
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**params)
         self.assertEqual(CtapError.ERR.INVALID_OPTION, ctx.exception.code)
+
+    def test_make_credential_requires_rk_option_present(self):
+        params = copy.copy(self.basic_makecred_params)
+        del params['options']
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params)
+        self.assertEqual(CtapError.ERR.INVALID_OPTION, ctx.exception.code)
+
+    def test_make_credential_ignores_uv(self):
+        params = copy.copy(self.basic_makecred_params)
+        params['options'] = {'rk': True, 'uv': True}
+        self.ctap2.make_credential(**params)
 
     def test_make_credential_self_attestation(self):
         rp_id = secrets.token_hex(50)
@@ -117,13 +142,13 @@ class CTAPBasicsTestCase(CTAPTestCase):
             self.ctap2.make_credential(**self.basic_makecred_params)
         self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
 
-    def test_makecred_disallowed_by_exclude_list(self):
+    def test_makecred_ignores_exclude_list(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         params = copy.copy(self.basic_makecred_params)
         params['exclude_list'] = [self.get_allow_list_entry_from_ll_cred(cred_res)]
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.make_credential(**params)
-        self.assertEqual(CtapError.ERR.CREDENTIAL_EXCLUDED, ctx.exception.code)
+        self.assertEqual(CtapError.ERR.LIMIT_EXCEEDED, ctx.exception.code)
 
     def test_accepts_long_utf8_display_name(self):
         self.basic_makecred_params['user']['display_name'] = "猫" * 144
@@ -135,7 +160,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
         assert_res = self.get_assertion(rp_id=self.rp_id)
         self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
 
-    def test_stale_allowlist_falls_back_to_resident_key(self):
+    def test_stale_allowlist_ignored_uses_resident_key(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         stale_id = secrets.token_bytes(len(cred_res.auth_data.credential_data.credential_id))
         assert_res = self.get_assertion_from_cred(
@@ -151,7 +176,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
             assert_res.credential['id'],
         )
 
-    def test_ignored_allowlist_entry_falls_back(self):
+    def test_ignored_allowlist_entry_uses_resident_key(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         assert_res = self.get_assertion_from_cred(
             cred_res,
