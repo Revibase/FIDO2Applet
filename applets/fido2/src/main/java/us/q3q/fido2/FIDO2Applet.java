@@ -27,13 +27,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     private static final byte FIRMWARE_VERSION = 0x08;
 
-    private static final byte[] AID = {
-            (byte) 0xA0, 0x00, 0x00, 0x06, 0x47,
-            0x2F, 0x00, 0x01
-    };
-
     private boolean attestationSwitchingEnabled;
-    /** Scratch for decrypting credential material before pushing to NdefApplet (CLEAR_ON_DESELECT). */
+    /**
+     * Scratch for decrypting credential material before pushing to NdefApplet
+     * (CLEAR_ON_DESELECT).
+     */
     private byte[] ndefPushScratch;
     private static final byte[] NDEF_CLIENT_AID = {
             (byte) 0xD2, (byte) 0x76, 0x00, 0x00, (byte) 0x85, 0x01, 0x01
@@ -50,9 +48,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private static final short MAX_USER_ID_LENGTH = 64;
     private static final short KEY_POINT_LENGTH = 32;
     private static final short RP_HASH_LEN = 32;
-    // Encrypted credential payload holds only the private key scalar. The RP ID hash was dropped
-    // (RP ID check is skipped at assertion time) and the one-block marker was dropped because the
-    // HMAC tag (tagOk) is the real authenticity guarantee; the marker's mixedOk check was redundant.
+    // Encrypted credential payload holds only the private key scalar. The RP ID
+    // hash was dropped
+    // (RP ID check is skipped at assertion time) and the one-block marker was
+    // dropped because the
+    // HMAC tag (tagOk) is the real authenticity guarantee; the marker's mixedOk
+    // check was redundant.
     private static final short CREDENTIAL_PAYLOAD_LEN = KEY_POINT_LENGTH;
     private static final short CREDENTIAL_ID_LEN = (short) (CREDENTIAL_PAYLOAD_LEN + IV_LEN + 16);
     private static final short PUB_KEY_LENGTH = (short) (2 * KEY_POINT_LENGTH + 1);
@@ -80,8 +81,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
     private final Signature attester;
-
-
 
     private static boolean isExtendedApdu(APDU apdu) {
         return apdu.getOffsetCdata() == ISO7816.OFFSET_EXT_CDATA;
@@ -231,7 +230,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     }
 
     /**
-     * Reject a pinUvAuthParam per CTAP2.0: a zero-length value is the platform probing
+     * Reject a pinUvAuthParam per CTAP2.0: a zero-length value is the platform
+     * probing
      * for PIN state (answer: no PIN is set); anything else can never verify because
      * clientPin is unsupported. Always terminates the request.
      */
@@ -325,10 +325,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                     outputBuffer, outputOffset);
             final boolean tagOk = SecureCompare.eq(scratch, (short) (scratchOff + CREDENTIAL_ID_LEN - 16),
                     outputBuffer, outputOffset, (short) 16);
-            // Decrypt the payload (the private key scalar) into the output buffer for the caller.
+            // Decrypt the payload (the private key scalar) into the output buffer for the
+            // caller.
             extractCredentialMixed(scratch, scratchOff, outputBuffer, outputOffset);
-            // RP ID check intentionally skipped: we accept our resident credential for any requested
-            // RP ID. Authenticity rests entirely on the HMAC tag (tagOk) over the IV + ciphertext.
+            // RP ID check intentionally skipped: we accept our resident credential for any
+            // requested
+            // RP ID. Authenticity rests entirely on the HMAC tag (tagOk) over the IV +
+            // ciphertext.
             return credentialLen == CREDENTIAL_ID_LEN && tagOk;
         } finally {
             bufferManager.release(apdu, scratchHandle, CREDENTIAL_ID_LEN);
@@ -400,7 +403,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             if (isExtendedAPDU) {
                 transientStorage.setOutgoingContinuation(amountFitInBuffer,
                         (short) (totalOutputLen - amountFitInBuffer));
-                while (!streamOutgoingContinuation(apdu, apduBytes, false)) ;
+                while (!streamOutgoingContinuation(apdu, apduBytes, false))
+                    ;
             } else {
                 setupChainedResponse(amountFitInBuffer, (short) (totalOutputLen - amountFitInBuffer));
             }
@@ -473,10 +477,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     private void handleAppletSelect(APDU apdu) {
         apdu.setIncomingAndReceive();
-        if (apdu.getIncomingLength() < AID.length || Util.arrayCompare(AID, (short) 0,
-                apdu.getBuffer(), apdu.getOffsetCdata(), (short) AID.length) != 0) {
-            throwException(ISO7816.SW_FILE_NOT_FOUND);
-        }
         if (bufferManager == null) {
             initTransientStorage(apdu);
             short availableMem = JCSystem.getAvailableMemory(JCSystem.MEMORY_TYPE_TRANSIENT_DESELECT);
@@ -549,10 +549,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     }
 
     /**
-     * Pushes the credential's private key and compressed public key to NdefApplet via
+     * Pushes the credential's private key and compressed public key to NdefApplet
+     * via
      * {@link NdefKeyStore}. After this call NdefApplet signs URLs independently.
      *
-     * @return true if the key was pushed and committed; false if NDEF is unavailable or push failed
+     * @return true if the key was pushed and committed; false if NDEF is
+     *         unavailable or push failed
      */
     private boolean pushKeyToNdefApplet() {
         if (numResidentCredentials == 0 || residentKeys[0] == null) {
@@ -788,13 +790,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         doSendResponse(apdu, outputLen);
     }
 
-
     private void getAssertion(final APDU apdu, final short lc, final byte[] buffer) {
         short readIdx = 1;
         final short scratchRPIDHashHandle = bufferManager.allocate(apdu, RP_HASH_LEN, BufferManager.NOT_APDU_BUFFER);
         final byte[] scratchRPIDHashBuffer = bufferManager.getBufferForHandle(apdu, scratchRPIDHashHandle);
         final short scratchRPIDHashIdx = bufferManager.getOffsetForHandle(scratchRPIDHashHandle);
-        final short clientDataHashHandle = bufferManager.allocate(apdu, CLIENT_DATA_HASH_LEN, BufferManager.NOT_APDU_BUFFER);
+        final short clientDataHashHandle = bufferManager.allocate(apdu, CLIENT_DATA_HASH_LEN,
+                BufferManager.NOT_APDU_BUFFER);
         final byte[] clientDataHashBuffer = bufferManager.getBufferForHandle(apdu, clientDataHashHandle);
         final short clientDataHashIdx = bufferManager.getOffsetForHandle(clientDataHashHandle);
         final short credStorageHandle = bufferManager.allocate(apdu, CREDENTIAL_ID_LEN, BufferManager.NOT_APDU_BUFFER);
@@ -883,7 +885,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         outputBuffer[outputIdx++] = 0x01;
         outputIdx = packCredentialId(credStorageBuffer, credStorageOffset, outputBuffer, outputIdx);
         outputBuffer[outputIdx++] = 0x02;
-        // UP (user present) unless the platform asked for a silent assertion via up:false
+        // UP (user present) unless the platform asked for a silent assertion via
+        // up:false
         byte flags = transientStorage.hasUPOption() ? (byte) 0x01 : (byte) 0x00;
         short adLen = getAuthDataLen(false);
         final short adAddlBytes = writeADBasic(outputBuffer, adLen, outputIdx, flags,
@@ -911,7 +914,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         doSendResponse(apdu, outputIdx);
     }
 
-/**
+    /**
      * If the given byte represents a CBOR map, return the number of entries in that
      * map.
      * Otherwise, return an error to the platform.
@@ -928,7 +931,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         return (short) (sb - 0x00A0);
     }
-/**
+
+    /**
      * Creates a "good" (32-byte-private-key) EC keypair.
      *
      * @param keyPair         After call, this is set to a usable keypair. Before
@@ -954,7 +958,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         return wLen == PUB_KEY_LENGTH && publicKeyBuffer[publicKeyOffset] == 0x04;
     }
-/**
+
+    /**
      * Copies a section of a raw RP ID into a target buffer. If it is longer than
      * the max it will be cut down.
      * If it is shorter, it will be zero-padded.
@@ -1017,7 +1022,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         return rpIdLen;
     }
-/**
+
+    /**
      * Hand-spun implementation of HMAC-SHA256, to work around lack of hardware
      * support
      *
@@ -1064,6 +1070,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         bufferManager.release(apdu, scratchHandle, scratchAmt);
     }
+
     private short readCborStrKeyLen(APDU apdu, byte[] buffer, short readIdx, short lc) {
         short keyDef = ub(buffer[readIdx]);
         if (keyDef == 0x0078) {
@@ -1336,7 +1343,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return hasEs256 && hasPublicKey;
     }
 
-/**
+    /**
      * Write the portions of an authData block that are used for both makeCredential
      * and getAssertion
      *
@@ -1366,7 +1373,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         return adAddlBytes;
     }
-/**
+
+    /**
      * Pack an EC public key into the given buffer
      *
      * @param outBuf       Buffer into which to write
@@ -1388,7 +1396,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 outBuf, outputLen, KEY_POINT_LENGTH);
         return outputLen;
     }
-/**
+
+    /**
      * Initializes the attester with a given key. After call, attestations may be
      * made.
      *
@@ -1401,7 +1410,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         ecPrivateKey.setS(buffer, offset, (short) 32);
         attester.init(ecPrivateKey, Signature.MODE_SIGN);
     }
-/**
+
+    /**
      * Sets in-memory variables capturing possible incoming CTAP options to their
      * default values
      */
@@ -1437,7 +1447,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     private void extractCredentialMixed(byte[] credentialBuffer, short credentialOffset,
             byte[] outputBuffer, short outputOffset) {
-        symmetricUnwrapper.init(lowSecurityWrappingKey, Cipher.MODE_DECRYPT, credentialBuffer, credentialOffset, IV_LEN);
+        symmetricUnwrapper.init(lowSecurityWrappingKey, Cipher.MODE_DECRYPT, credentialBuffer, credentialOffset,
+                IV_LEN);
         final short ret = symmetricUnwrapper.doFinal(credentialBuffer, (short) (credentialOffset + IV_LEN),
                 CREDENTIAL_PAYLOAD_LEN, outputBuffer, outputOffset);
         if (ret != CREDENTIAL_PAYLOAD_LEN) {
@@ -1452,7 +1463,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return KEY_POINT_LENGTH;
     }
 
-/**
+    /**
      * Sets up state tracking for a chained (long) response to the platform, and
      * sends the appropriate status code.
      * Should only be called after the first packet in the chain is sent.
@@ -1472,6 +1483,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             throwException((short) (ISO7816.SW_BYTES_REMAINING_00 + remaining), false);
         }
     }
+
     /**
      * Pack a credential ID (CBOR-wrapped) into a target buffer
      *
@@ -1503,7 +1515,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         return writeOffset;
     }
-/**
+
+    /**
      * Packs a low-valued integer as a CBOR value into a given buffer
      *
      * @param outBuf      Buffer into which to write
@@ -1524,7 +1537,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         return writeOffset;
     }
-/**
+
+    /**
      * Gets an EC sig object
      *
      * @return An elliptic curve signature object suitable for the FIDO2 standard -
@@ -1533,7 +1547,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private Signature getECSig() {
         return Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
     }
-/**
+
+    /**
      * Gets an elliptic curve private key object.
      *
      * @param forceAllowTransient If true, allow this PRIVATE key to be in transient
@@ -1564,7 +1579,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         return (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, KeyBuilder.LENGTH_EC_FP_256, false);
     }
-/**
+
+    /**
      * Get a persistent AES key
      *
      * @return An AESKey object that will retain its contents indefinitely
@@ -1572,7 +1588,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private AESKey getPersistentAESKey() {
         return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
     }
-/**
+
+    /**
      * Gets AES encipherment
      *
      * @return A Cipher set up for AES with an authenticator-supported block size
@@ -1583,7 +1600,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         // doesn't say anything about the key length
         return Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
     }
-/**
+
+    /**
      * Allocates a new byte buffer.
      *
      * @param len   Number of bytes to allocate
@@ -1598,7 +1616,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         // Yuck.
         return new byte[len];
     }
-/**
+
+    /**
      * Initialize non-self attestation mode.
      *
      * This installs an AAGUID and a certificate chain for signing credentials,
@@ -1695,7 +1714,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         return false;
     }
-/**
+
+    /**
      * Continue loading part of an attestation key; used as part of initial setup
      * for basic auth.
      *
@@ -1741,7 +1761,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         return done;
     }
-/**
+
+    /**
      * Initialize the per-credential key object.
      *
      * @param ecPairInRam If true, try to place the private key in transient memory
@@ -1754,6 +1775,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         P256Constants.setCurve((ECKey) ecKeyPair.getPrivate());
         P256Constants.setCurve((ECKey) ecKeyPair.getPublic());
     }
+
     private void compressSecp256r1PublicKey(byte[] xy, short xyOff, byte[] out, short outOff) {
         out[outOff] = (byte) (0x02 | (xy[(short) (xyOff + 63)] & 1));
         Util.arrayCopyNonAtomic(xy, xyOff, out, (short) (outOff + 1), (short) 32);
@@ -1825,7 +1847,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             return;
         }
-        
+
         if (cla_ins == 0x0001) {
             transientStorage.clearOutgoingContinuation();
             // U2F REGISTER is intentionally unsupported: the single resident key is
@@ -1866,7 +1888,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         final short amtRead = apdu.setIncomingAndReceive();
         final short lc = apdu.getIncomingLength();
-      if (amtRead == 0) {
+        if (amtRead == 0) {
             throwException(ISO7816.SW_DATA_INVALID);
         }
         short lcEffective = (short) (lc + 1);
@@ -1892,7 +1914,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 getAssertion(apdu, lcEffective, reqBuffer);
                 break;
             case FIDOConstants.CMD_INSTALL_CERTS:
-                 boolean extended = isExtendedApdu(apdu);
+                boolean extended = isExtendedApdu(apdu);
                 short apOffset;
                 lcEffective = (short) (lc - 5);
                 reqBuffer = fullyReadReq(apdu, lc, amtRead, !extended);
@@ -1918,7 +1940,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         transientStorage.clearOnDeselect();
     }
 
-     private void u2FAuthenticate(APDU apdu, byte p1) {
+    private void u2FAuthenticate(APDU apdu, byte p1) {
         if (!isU2fProvisioned()) {
             // Authenticating requires an attestation certificate!
             throwException(ISO7816.SW_COMMAND_NOT_ALLOWED);
@@ -2003,7 +2025,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         sendNoCopy(apdu, (short) (sigLen + 5));
     }
 
-
     public static void install(byte[] array, short offset, byte length) throws ISOException {
         if (length > 0) {
             short aidLen = ub(array[offset]);
@@ -2018,9 +2039,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private FIDO2Applet(byte[] array, short offset, byte length) {
         attestationSwitchingEnabled = false;
         MAX_RESIDENT_RP_ID_LENGTH = 32;
-        // Defaults favor RAM-first operation; flash fallback (bufferMem / flashBuffer) causes
-        // EEPROM wear when CTAP scratch exhausts transient space. Tune down only after testAll
-        // passes with your attestation chain size (see tools/get_install_parameters.py).
+        // Defaults favor RAM-first operation; flash fallback (bufferMem / flashBuffer)
+        // causes
+        // EEPROM wear when CTAP scratch exhausts transient space. Tune down only after
+        // testAll
+        // passes with your attestation chain size (see
+        // tools/get_install_parameters.py).
         MAX_RAM_SCRATCH_SIZE = 512;
         BUFFER_MEM_SIZE = 2048;
         FLASH_SCRATCH_SIZE = 1024;

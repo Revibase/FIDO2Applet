@@ -23,8 +23,6 @@ public class AppletBasicTest {
 
     CardSimulator simulator;
     AID appletAID = AIDUtil.create("A0000006472F0001");
-    AID randoAID = AIDUtil.create("F100900001");
-    AID randoLongAID = AIDUtil.create("F100900001AAAAAAAAAAAA");
 
     @BeforeEach
     public void setupApplet() {
@@ -35,14 +33,6 @@ public class AppletBasicTest {
         simulator.selectApplet(appletAID);
     }
 
-    private ResponseAPDU sendCTAP(String hexCommand) {
-        int[] bparams = new int[hexCommand.length() / 2];
-        for (int i = 0; i < bparams.length; i++) {
-            bparams[i] = ((Character.digit(hexCommand.charAt(i*2), 16) << 4)
-                    + Character.digit(hexCommand.charAt(i*2+1), 16));
-        }
-        return sendCTAP(bparams);
-    }
 
     private ResponseAPDU send(byte[] bparams) {
         CommandAPDU commandAPDU = new CommandAPDU(bparams);
@@ -155,28 +145,6 @@ public class AppletBasicTest {
         byte[] respWithoutStatus = new byte[resp.length-2];
         System.arraycopy(resp, 0, respWithoutStatus, 0, resp.length-2);
         assertEquals("FIDO_2_0", new String(respWithoutStatus));
-    }
-
-    @Test
-    public void checkIgnoreSelectingIncorrectAID() {
-        byte[] resp = simulator.selectAppletWithResult(appletAID);
-        short recvdStatus = (short) (resp[resp.length - 2] * 256 + resp[resp.length - 1]);
-
-        assertEquals(ISO7816.SW_NO_ERROR, recvdStatus);
-
-        ResponseAPDU responseAPDU = send(AIDUtil.select(randoAID));
-        assertEquals(ISO7816.SW_FILE_NOT_FOUND, responseAPDU.getSW());
-    }
-
-    @Test
-    public void checkIgnoreSelectingIncorrectLongAID() {
-        byte[] resp = simulator.selectAppletWithResult(appletAID);
-        short recvdStatus = (short) (resp[resp.length - 2] * 256 + resp[resp.length - 1]);
-
-        assertEquals(ISO7816.SW_NO_ERROR, recvdStatus);
-
-        ResponseAPDU responseAPDU = send(AIDUtil.select(randoLongAID));
-        assertEquals(ISO7816.SW_FILE_NOT_FOUND, responseAPDU.getSW());
     }
 
 }

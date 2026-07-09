@@ -32,7 +32,7 @@
   },
 
   "ndef_install": {
-    "base_url": "https://app.revibase.com/halo"
+    "base_url": "https://app.revibase.com/vault"
   },
 
   "fido_install": {
