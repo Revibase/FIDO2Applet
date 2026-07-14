@@ -76,6 +76,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private BufferManager bufferManager;
     private ResidentKeyData[] residentKeys;
     private short numResidentCredentials;
+    /** True after a successful one-time key push to NdefApplet. */
+    private boolean ndefKeyPushed;
     private final byte[] aaguid = {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -299,7 +301,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         Util.arrayCopyNonAtomic(scratch, scratchOff, outBuffer, payloadOffset, (short) 16);
         bufferManager.release(apdu, scratchHandle, KEY_POINT_LENGTH);
         if (encryptedBytes != CREDENTIAL_PAYLOAD_LEN) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_REQUEST_TOO_LARGE);
+            // Internal AES length mismatch — not a platform request-size problem.
+            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_OTHER);
         }
     }
 
@@ -550,13 +553,17 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     /**
      * Pushes the credential's private key and compressed public key to NdefApplet
-     * via
-     * {@link NdefKeyStore}. After this call NdefApplet signs URLs independently.
+     * via {@link NdefKeyStore}. Runs at most once for the applet lifetime; later
+     * calls are no-ops. After the first successful push, NdefApplet signs URLs
+     * independently.
      *
-     * @return true if the key was pushed and committed; false if NDEF is
-     *         unavailable or push failed
+     * @return true if the key is (or was already) available to NDEF; false if NDEF
+     *         is unavailable or the first push failed
      */
     private boolean pushKeyToNdefApplet() {
+        if (ndefKeyPushed) {
+            return true;
+        }
         if (numResidentCredentials == 0 || residentKeys[0] == null) {
             return false;
         }
@@ -564,7 +571,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             loadWrappingKey();
             extractCredentialMixed(residentKeys[0].getEncryptedCredentialID(), (short) 0,
                     ndefPushScratch, (short) 0);
-            residentKeys[0].unpackPublicKey(ndefPushScratch, (short) 144);
+            // ResidentKeyData stores uncompressed SEC1 (0x04||X||Y); compress for NDEF.
+            residentKeys[0].unpackPublicKey(ndefPushScratch, (short) 32);
+            compressSecp256r1PublicKey(ndefPushScratch, (short) 33, ndefPushScratch, (short) 32);
 
             AID ndefAid = JCSystem.lookupAID(NDEF_CLIENT_AID, (short) 0,
                     (byte) NDEF_CLIENT_AID.length);
@@ -582,9 +591,10 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 ks.setPrivKeyByte(i, ndefPushScratch[i]);
             }
             for (short i = 0; i < COMPRESSED_PUBKEY_LEN; i++) {
-                ks.setPubKeyByte(i, ndefPushScratch[(short) (144 + i)]);
+                ks.setPubKeyByte(i, ndefPushScratch[(short) (32 + i)]);
             }
             ks.commit();
+            ndefKeyPushed = true;
             return true;
         } catch (Exception e) {
             return false;
@@ -678,55 +688,74 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         final short scratchCredHandle = bufferManager.allocate(apdu, CREDENTIAL_ID_LEN, BufferManager.NOT_APDU_BUFFER);
         final short scratchCredOffset = bufferManager.getOffsetForHandle(scratchCredHandle);
         final byte[] scratchCredBuffer = bufferManager.getBufferForHandle(apdu, scratchCredHandle);
-        if (numResidentCredentials > 0 && residentKeys[0] != null) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_KEY_STORE_FULL);
-        }
-        P256Constants.setCurve((ECPrivateKey) ecKeyPair.getPrivate());
         final short scratchPublicKeyHandle = bufferManager.allocate(apdu, PUB_KEY_LENGTH, BufferManager.ANYWHERE);
         final short scratchPublicKeyOffset = bufferManager.getOffsetForHandle(scratchPublicKeyHandle);
         final byte[] scratchPublicKeyBuffer = bufferManager.getBufferForHandle(apdu, scratchPublicKeyHandle);
-        if (!makeGoodKeyPair(ecKeyPair, scratchPublicKeyBuffer, scratchPublicKeyOffset)) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE);
-        }
-        final short scratchUserIdHandle = bufferManager.allocate(apdu, MAX_USER_ID_LENGTH, BufferManager.ANYWHERE);
-        final short scratchUserIdOffset = bufferManager.getOffsetForHandle(scratchUserIdHandle);
-        final byte[] scratchUserIdBuffer = bufferManager.getBufferForHandle(apdu, scratchUserIdHandle);
-        Util.arrayCopyNonAtomic(buffer, userIdIdx, scratchUserIdBuffer, scratchUserIdOffset, userIdLen);
-        if (userIdLen < MAX_USER_ID_LENGTH) {
-            Util.arrayFillNonAtomic(scratchUserIdBuffer, (short) (scratchUserIdOffset + userIdLen),
-                    (short) (MAX_USER_ID_LENGTH - userIdLen), (byte) 0x00);
-        }
-        encodeCredentialID(apdu, (ECPrivateKey) ecKeyPair.getPrivate(),
-                scratchCredBuffer, scratchCredOffset, (short) 0);
-        JCSystem.beginTransaction();
-        boolean ok = false;
-        try {
-            numResidentCredentials = 1;
-            compressSecp256r1PublicKey(scratchPublicKeyBuffer, (short) (scratchPublicKeyOffset + 1),
-                    scratchPublicKeyBuffer, scratchPublicKeyOffset);
-            residentKeys[0] = new ResidentKeyData(random, lowSecurityWrappingKey, symmetricWrapper,
-                    scratchPublicKeyBuffer, scratchPublicKeyOffset, COMPRESSED_PUBKEY_LEN);
-            residentKeys[0].setEncryptedCredential(scratchCredBuffer, scratchCredOffset, CREDENTIAL_ID_LEN);
-            residentKeys[0].setUser(lowSecurityWrappingKey, symmetricWrapper,
-                    scratchUserIdBuffer, scratchUserIdOffset, userIdLen,
-                    buffer, userNameIdx, userNameLen);
-            bufferManager.release(apdu, scratchUserIdHandle, MAX_USER_ID_LENGTH);
-            final short scratchResidentRPIDHandle = bufferManager.allocate(apdu, MAX_RESIDENT_RP_ID_LENGTH,
+        final boolean reuseExistingRk = numResidentCredentials > 0 && residentKeys[0] != null;
+        if (reuseExistingRk) {
+            // Single-slot authenticator: reuse the existing resident key and return a
+            // fresh makeCredential attestation over that same credential.
+            final short credTempHandle = bufferManager.allocate(apdu, CREDENTIAL_PAYLOAD_LEN,
                     BufferManager.ANYWHERE);
-            final short scratchResidentRPIDOffset = bufferManager.getOffsetForHandle(scratchResidentRPIDHandle);
-            final byte[] scratchResidentRPIdBuffer = bufferManager.getBufferForHandle(apdu, scratchResidentRPIDHandle);
-            rpIdLen = truncateRPId(buffer, rpIdIdx, rpIdLen, scratchResidentRPIdBuffer, scratchResidentRPIDOffset);
-            residentKeys[0].setRpId(lowSecurityWrappingKey, symmetricWrapper,
-                    scratchResidentRPIdBuffer, scratchResidentRPIDOffset, (byte) rpIdLen);
-            bufferManager.release(apdu, scratchResidentRPIDHandle, MAX_RESIDENT_RP_ID_LENGTH);
-            ok = true;
-        } catch (Exception e) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_KEY_STORE_FULL);
-        } finally {
-            if (ok) {
-                JCSystem.commitTransaction();
-            } else {
-                JCSystem.abortTransaction();
+            final short credTempOffset = bufferManager.getOffsetForHandle(credTempHandle);
+            final byte[] credTempBuffer = bufferManager.getBufferForHandle(apdu, credTempHandle);
+            if (!checkCredential(apdu, (short) 0, credTempBuffer, credTempOffset)) {
+                // Stored credential HMAC/tag failed — EEPROM integrity problem.
+                bufferManager.release(apdu, credTempHandle, CREDENTIAL_PAYLOAD_LEN);
+                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE);
+            }
+            loadScratchIntoAttester(credTempBuffer, credTempOffset);
+            bufferManager.release(apdu, credTempHandle, CREDENTIAL_PAYLOAD_LEN);
+            Util.arrayCopyNonAtomic(residentKeys[0].getEncryptedCredentialID(), (short) 0,
+                    scratchCredBuffer, scratchCredOffset, CREDENTIAL_ID_LEN);
+            residentKeys[0].unpackPublicKey(scratchPublicKeyBuffer, scratchPublicKeyOffset);
+        } else {
+            P256Constants.setCurve((ECPrivateKey) ecKeyPair.getPrivate());
+            if (!makeGoodKeyPair(ecKeyPair, scratchPublicKeyBuffer, scratchPublicKeyOffset)) {
+                // Key generation produced an unusable keypair (not a checksum failure).
+                sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_OTHER);
+            }
+            final short scratchUserIdHandle = bufferManager.allocate(apdu, MAX_USER_ID_LENGTH, BufferManager.ANYWHERE);
+            final short scratchUserIdOffset = bufferManager.getOffsetForHandle(scratchUserIdHandle);
+            final byte[] scratchUserIdBuffer = bufferManager.getBufferForHandle(apdu, scratchUserIdHandle);
+            Util.arrayCopyNonAtomic(buffer, userIdIdx, scratchUserIdBuffer, scratchUserIdOffset, userIdLen);
+            if (userIdLen < MAX_USER_ID_LENGTH) {
+                Util.arrayFillNonAtomic(scratchUserIdBuffer, (short) (scratchUserIdOffset + userIdLen),
+                        (short) (MAX_USER_ID_LENGTH - userIdLen), (byte) 0x00);
+            }
+            encodeCredentialID(apdu, (ECPrivateKey) ecKeyPair.getPrivate(),
+                    scratchCredBuffer, scratchCredOffset, (short) 0);
+            JCSystem.beginTransaction();
+            boolean ok = false;
+            try {
+                numResidentCredentials = 1;
+                // Store uncompressed SEC1 public key so later makeCredential calls can
+                // rebuild attestation authData without regenerating the key.
+                residentKeys[0] = new ResidentKeyData(random, lowSecurityWrappingKey, symmetricWrapper,
+                        scratchPublicKeyBuffer, scratchPublicKeyOffset, PUB_KEY_LENGTH);
+                residentKeys[0].setEncryptedCredential(scratchCredBuffer, scratchCredOffset, CREDENTIAL_ID_LEN);
+                residentKeys[0].setUser(lowSecurityWrappingKey, symmetricWrapper,
+                        scratchUserIdBuffer, scratchUserIdOffset, userIdLen,
+                        buffer, userNameIdx, userNameLen);
+                bufferManager.release(apdu, scratchUserIdHandle, MAX_USER_ID_LENGTH);
+                final short scratchResidentRPIDHandle = bufferManager.allocate(apdu, MAX_RESIDENT_RP_ID_LENGTH,
+                        BufferManager.ANYWHERE);
+                final short scratchResidentRPIDOffset = bufferManager.getOffsetForHandle(scratchResidentRPIDHandle);
+                final byte[] scratchResidentRPIdBuffer = bufferManager.getBufferForHandle(apdu, scratchResidentRPIDHandle);
+                rpIdLen = truncateRPId(buffer, rpIdIdx, rpIdLen, scratchResidentRPIdBuffer, scratchResidentRPIDOffset);
+                residentKeys[0].setRpId(lowSecurityWrappingKey, symmetricWrapper,
+                        scratchResidentRPIdBuffer, scratchResidentRPIDOffset, (byte) rpIdLen);
+                bufferManager.release(apdu, scratchResidentRPIDHandle, MAX_RESIDENT_RP_ID_LENGTH);
+                ok = true;
+            } catch (Exception e) {
+                // Could not persist the resident key (CTAP: storage exhaustion / write failure).
+                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_KEY_STORE_FULL);
+            } finally {
+                if (ok) {
+                    JCSystem.commitTransaction();
+                } else {
+                    JCSystem.abortTransaction();
+                }
             }
         }
         final short clientDataHashHandle = bufferManager.allocate(apdu, CLIENT_DATA_HASH_LEN, BufferManager.ANYWHERE);
@@ -782,10 +811,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 transientStorage.setStreamX5CLater(true);
             }
         }
-        // Push signing key to NdefApplet while FIDO2 is still selected so AES works.
-        // After this, NdefApplet signs URLs independently on every NFC read.
+        // Push signing key to NdefApplet once (while FIDO2 is still selected so AES
+        // works). Subsequent makeCredential reuses are no-ops inside the pusher.
+        // NDEF push failure is not a FIDO key-store-full condition.
         if (!pushKeyToNdefApplet()) {
-            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_KEY_STORE_FULL);
+            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_OTHER);
         }
         doSendResponse(apdu, outputLen);
     }
@@ -865,16 +895,19 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             short credTempHandle = bufferManager.allocate(apdu, CREDENTIAL_PAYLOAD_LEN, BufferManager.ANYWHERE);
             short credTempOffset = bufferManager.getOffsetForHandle(credTempHandle);
             byte[] credTempBuffer = bufferManager.getBufferForHandle(apdu, credTempHandle);
-            if (checkCredential(apdu, (short) 0,
-                    credTempBuffer, credTempOffset)) {
-                rkMatch = 0;
-                loadScratchIntoAttester(credTempBuffer, credTempOffset);
-                Util.arrayCopyNonAtomic(residentKeys[0].getEncryptedCredentialID(), (short) 0,
-                        credStorageBuffer, credStorageOffset, residentKeys[0].getCredLen());
+            if (!checkCredential(apdu, (short) 0, credTempBuffer, credTempOffset)) {
+                // Stored credential HMAC/tag failed — not "no credentials".
+                bufferManager.release(apdu, credTempHandle, CREDENTIAL_PAYLOAD_LEN);
+                sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE);
             }
+            rkMatch = 0;
+            loadScratchIntoAttester(credTempBuffer, credTempOffset);
+            Util.arrayCopyNonAtomic(residentKeys[0].getEncryptedCredentialID(), (short) 0,
+                    credStorageBuffer, credStorageOffset, residentKeys[0].getCredLen());
             bufferManager.release(apdu, credTempHandle, CREDENTIAL_PAYLOAD_LEN);
         }
         if (rkMatch < 0) {
+            // No resident key has been provisioned yet.
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_NO_CREDENTIALS);
         }
         byte[] outputBuffer = bufferMem;
@@ -1850,9 +1883,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
         if (cla_ins == 0x0001) {
             transientStorage.clearOutgoingContinuation();
-            // U2F REGISTER is intentionally unsupported: the single resident key is
-            // created via CTAP2 makeCredential only.
-            throwException(ISO7816.SW_COMMAND_NOT_ALLOWED);
+            u2FRegister(apdu);
             return;
         } else if (cla_ins == 0x0002) {
             transientStorage.clearOutgoingContinuation();
@@ -1938,6 +1969,101 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     public void deselect() {
         transientStorage.clearOnDeselect();
+    }
+
+    /**
+     * U2F REGISTER: returns a standards-shaped registration response for the
+     * existing resident key (created via CTAP2 makeCredential). Does not create
+     * a new key or push to NDEF again.
+     */
+    private void u2FRegister(APDU apdu) {
+        if (!isU2fProvisioned()) {
+            // Matches U2F AUTHENTICATE: attestation cert required.
+            throwException(ISO7816.SW_COMMAND_NOT_ALLOWED);
+        }
+        if (numResidentCredentials == 0 || residentKeys[0] == null) {
+            // Matches U2F AUTHENTICATE: no usable key → wrong data.
+            throwException(ISO7816.SW_WRONG_DATA);
+        }
+
+        short attCertLen = 0;
+        short attCertStart = 2;
+        final byte cborAttLenByte = attestationData[1];
+        if (cborAttLenByte < 0x57 && cborAttLenByte >= 0x40) {
+            attCertLen = (short) (cborAttLenByte - 0x40);
+        } else if (cborAttLenByte == 0x58) {
+            attCertLen = ub(attestationData[attCertStart++]);
+        } else if (cborAttLenByte == 0x59) {
+            attCertLen = Util.getShort(attestationData, attCertStart);
+            attCertStart += 2;
+        } else {
+            throwException(ISO7816.SW_DATA_INVALID);
+        }
+
+        final short amtRead = apdu.setIncomingAndReceive();
+        final short lc = apdu.getIncomingLength();
+        if (lc != (short) (CLIENT_DATA_HASH_LEN + RP_HASH_LEN)) {
+            throwException(ISO7816.SW_WRONG_LENGTH);
+        }
+        final byte[] reqBuffer = fullyReadReq(apdu, lc, amtRead, true);
+        final short clientDataHashOffset = 0;
+        final short appIdHashOffset = CLIENT_DATA_HASH_LEN;
+
+        final short publicKeyHandle = bufferManager.allocate(apdu, PUB_KEY_LENGTH,
+                BufferManager.NOT_APDU_BUFFER);
+        final short publicKeyOffset = bufferManager.getOffsetForHandle(publicKeyHandle);
+        final byte[] publicKeyBuffer = bufferManager.getBufferForHandle(apdu, publicKeyHandle);
+        final short scratchCredHandle = bufferManager.allocate(apdu, CREDENTIAL_ID_LEN,
+                BufferManager.NOT_APDU_BUFFER);
+        final short scratchCredOffset = bufferManager.getOffsetForHandle(scratchCredHandle);
+        final byte[] scratchCredBuffer = bufferManager.getBufferForHandle(apdu, scratchCredHandle);
+
+        residentKeys[0].unpackPublicKey(publicKeyBuffer, publicKeyOffset);
+        Util.arrayCopyNonAtomic(residentKeys[0].getEncryptedCredentialID(), (short) 0,
+                scratchCredBuffer, scratchCredOffset, CREDENTIAL_ID_LEN);
+
+        final short tbsLen = (short) (1 + RP_HASH_LEN + CLIENT_DATA_HASH_LEN + CREDENTIAL_ID_LEN
+                + PUB_KEY_LENGTH);
+        final short tbsHandle = bufferManager.allocate(apdu, tbsLen, BufferManager.NOT_APDU_BUFFER);
+        final short tbsOffset = bufferManager.getOffsetForHandle(tbsHandle);
+        final byte[] tbsBuffer = bufferManager.getBufferForHandle(apdu, tbsHandle);
+        short tbsWrite = tbsOffset;
+        tbsBuffer[tbsWrite++] = 0x00;
+        tbsWrite = Util.arrayCopyNonAtomic(reqBuffer, appIdHashOffset,
+                tbsBuffer, tbsWrite, RP_HASH_LEN);
+        tbsWrite = Util.arrayCopyNonAtomic(reqBuffer, clientDataHashOffset,
+                tbsBuffer, tbsWrite, CLIENT_DATA_HASH_LEN);
+        tbsWrite = Util.arrayCopyNonAtomic(scratchCredBuffer, scratchCredOffset,
+                tbsBuffer, tbsWrite, CREDENTIAL_ID_LEN);
+        Util.arrayCopyNonAtomic(publicKeyBuffer, publicKeyOffset,
+                tbsBuffer, tbsWrite, PUB_KEY_LENGTH);
+
+        final short sigScratchHandle = bufferManager.allocate(apdu, (short) 80,
+                BufferManager.NOT_APDU_BUFFER);
+        final short sigScratchOffset = bufferManager.getOffsetForHandle(sigScratchHandle);
+        final byte[] sigScratchBuffer = bufferManager.getBufferForHandle(apdu, sigScratchHandle);
+        attester.init(attestationKey, Signature.MODE_SIGN);
+        final short sigLength = attester.sign(tbsBuffer, tbsOffset, tbsLen,
+                sigScratchBuffer, sigScratchOffset);
+
+        short outputLen = 0;
+        bufferMem[outputLen++] = 0x05;
+        outputLen = Util.arrayCopyNonAtomic(publicKeyBuffer, publicKeyOffset,
+                bufferMem, outputLen, PUB_KEY_LENGTH);
+        bufferMem[outputLen++] = (byte) CREDENTIAL_ID_LEN;
+        outputLen = Util.arrayCopyNonAtomic(scratchCredBuffer, scratchCredOffset,
+                bufferMem, outputLen, CREDENTIAL_ID_LEN);
+        outputLen = Util.arrayCopyNonAtomic(attestationData, attCertStart,
+                bufferMem, outputLen, attCertLen);
+        outputLen = Util.arrayCopyNonAtomic(sigScratchBuffer, sigScratchOffset,
+                bufferMem, outputLen, sigLength);
+
+        bufferManager.release(apdu, sigScratchHandle, (short) 80);
+        bufferManager.release(apdu, tbsHandle, tbsLen);
+        bufferManager.release(apdu, scratchCredHandle, CREDENTIAL_ID_LEN);
+        bufferManager.release(apdu, publicKeyHandle, PUB_KEY_LENGTH);
+
+        doSendResponse(apdu, outputLen);
     }
 
     private void u2FAuthenticate(APDU apdu, byte p1) {
@@ -2109,6 +2235,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         lowSecurityWrappingKey = getPersistentAESKey();
         residentKeys = new ResidentKeyData[1];
         numResidentCredentials = 0;
+        ndefKeyPushed = false;
         counter = new SigOpCounter();
         random = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
         symmetricWrapper = getAES();

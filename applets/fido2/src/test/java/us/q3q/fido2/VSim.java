@@ -41,16 +41,22 @@ public class VSim {
         installApplet(sim, params, defaultNdefInstallParams());
     }
 
+    /**
+     * @param ndefParams NDEF install buffer, or {@code null} to install FIDO2 only
+     *                   (used to test NDEF-push failure → CTAP1_ERR_OTHER)
+     */
     public static synchronized void installApplet(Simulator sim, byte[] params, byte[] ndefParams) {
         if (params.length > 255) {
             throw new IllegalArgumentException("Install parameters too long!");
         }
-        if (ndefParams.length > 255) {
+        if (ndefParams != null && ndefParams.length > 255) {
             throw new IllegalArgumentException("NDEF install parameters too long!");
         }
         sim.installApplet(fidoAppletAID, FIDO2Applet.class, params, (short) 0, (byte) params.length);
-        sim.installApplet(ndefAppletAID, NdefApplet.class,
-                ndefParams, (short) 0, (byte) ndefParams.length);
+        if (ndefParams != null) {
+            sim.installApplet(ndefAppletAID, NdefApplet.class,
+                    ndefParams, (short) 0, (byte) ndefParams.length);
+        }
         selectFido(sim);
     }
 

@@ -44,7 +44,10 @@ class CTAPTestCase(JCardSimTestCase, abc.ABC):
     basic_makecred_params: dict[str, Any]
     USE_EXT_APDU = False
 
-    def setUp(self, install_params: Optional[bytes] = None) -> None:
+    def setUp(
+        self,
+        install_params: Optional[bytes | tuple[bytes, Optional[bytes]]] = None,
+    ) -> None:
         self.basic_makecred_params = {
             "rp": {},
             "user": {},

@@ -19,6 +19,7 @@ SW_WRONG_LENGTH = 0x6700
 SW_CONDITIONS_NOT_SATISFIED = 0x6985
 SW_WRONG_DATA = 0x6A80
 SW_COMMAND_NOT_ALLOWED = 0x6986
+SW_BYTES_REMAINING_00 = 0x6100
 
 
 def _sw(resp: bytes) -> int:
@@ -30,6 +31,23 @@ def select_fido_applet(transmit) -> bytes:
     resp = transmit(apdu)
     assert _sw(resp) == SW_NO_ERROR, f"SELECT failed: {_sw(resp):04X}"
     return resp[:-2]
+
+
+def transmit_with_get_response(transmit, apdu: bytes) -> bytes:
+    """Transmit an APDU and follow ISO GET RESPONSE (0x61XX) chaining."""
+    resp = transmit(apdu)
+    parts = [resp[:-2]]
+    rounds = 0
+    while SW_BYTES_REMAINING_00 <= _sw(resp) < SW_BYTES_REMAINING_00 + 256:
+        if rounds > 64:
+            raise AssertionError(f"GET RESPONSE chaining exceeded 64 rounds (last SW={_sw(resp):04X})")
+        rounds += 1
+        le = _sw(resp) & 0xFF
+        if le == 0:
+            le = 256
+        resp = transmit(bytes([0x00, 0xC0, 0x00, 0x00, le & 0xFF]))
+        parts.append(resp[:-2])
+    return b"".join(parts) + resp[-2:]
 
 
 def build_u2f_register_apdu(challenge_hash: bytes, app_id_hash: bytes) -> bytes:
@@ -87,7 +105,7 @@ class U2FAuthenticateTestCase(BasicAttestationTestCase):
         self.install_attestation_cert()
 
     def u2f_transmit(self, apdu: bytes) -> bytes:
-        return self.transmit_apdu(apdu)
+        return transmit_with_get_response(self.transmit_apdu, apdu)
 
     def test_select_returns_u2f_v2_after_attestation(self):
         resp_data = select_fido_applet(self.u2f_transmit)
@@ -99,17 +117,46 @@ class U2FAuthenticateTestCase(BasicAttestationTestCase):
         self.assertEqual(SW_NO_ERROR, _sw(resp))
         self.assertEqual(b"U2F_V2", resp[:-2])
 
-    def test_u2f_register_always_rejected(self):
+    def test_u2f_register_requires_resident_key(self):
         select_fido_applet(self.u2f_transmit)
         challenge = secrets.token_bytes(32)
         app_id = self.rp_id_hash(self.rp_id)
         resp = self.u2f_transmit(build_u2f_register_apdu(challenge, app_id))
-        self.assertEqual(SW_COMMAND_NOT_ALLOWED, _sw(resp))
+        # Attestation is present (see setUp) but no RK yet — same SW as AUTHENTICATE.
+        self.assertEqual(SW_WRONG_DATA, _sw(resp))
 
-        self.ctap2.make_credential(**self.basic_makecred_params)
+    def test_u2f_register_reuses_resident_key(self):
+        cred = self.ctap2.make_credential(**self.basic_makecred_params)
+        expected_cred_id = cred.auth_data.credential_data.credential_id
+        expected_pubkey = cred.auth_data.credential_data.public_key
+
+        select_fido_applet(self.u2f_transmit)
         challenge = secrets.token_bytes(32)
+        app_id = self.rp_id_hash(self.rp_id)
         resp = self.u2f_transmit(build_u2f_register_apdu(challenge, app_id))
-        self.assertEqual(SW_COMMAND_NOT_ALLOWED, _sw(resp))
+        self.assertEqual(SW_NO_ERROR, _sw(resp))
+        data = resp[:-2]
+        self.assertEqual(0x05, data[0])
+        # SEC1 uncompressed P-256 public key
+        self.assertEqual(0x04, data[1])
+        self.assertEqual(CREDENTIAL_ID_LEN, data[66])
+        self.assertEqual(expected_cred_id, data[67:67 + CREDENTIAL_ID_LEN])
+
+        # Second register must reuse the same resident key (idempotent).
+        challenge2 = secrets.token_bytes(32)
+        resp2 = self.u2f_transmit(build_u2f_register_apdu(challenge2, app_id))
+        self.assertEqual(SW_NO_ERROR, _sw(resp2))
+        data2 = resp2[:-2]
+        self.assertEqual(expected_cred_id, data2[67:67 + CREDENTIAL_ID_LEN])
+        self.assertEqual(data[1:66], data2[1:66])
+
+        # Returned key must still authenticate as the CTAP2 credential public key.
+        auth_apdu = build_u2f_authenticate_apdu(challenge, app_id, expected_cred_id)
+        auth_resp = self.u2f_transmit(auth_apdu)
+        sw, parsed = parse_u2f_authenticate_response(auth_resp)
+        self.assertEqual(SW_NO_ERROR, sw)
+        signed = u2f_signed_payload(app_id, parsed["flags"], parsed["counter"], challenge)
+        expected_pubkey.verify(signed, parsed["signature"])
 
     def test_u2f_authenticate_no_resident_key(self):
         select_fido_applet(self.u2f_transmit)

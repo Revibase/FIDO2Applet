@@ -164,15 +164,18 @@ class JCardSimTestCase(TestCase, abc.ABC):
 
     def setUp(self, install_params: Optional[bytes | tuple[bytes, Optional[bytes]]] = None) -> None:
         assert self.p[0].is_alive()
+        # Tuple form: (fido_cbor_params, ndef_params). ndef_params=None skips NDEF install.
+        # Bare bytes (or None): FIDO params with the default NDEF stub install.
+        explicit_ndef = isinstance(install_params, tuple)
         ndef_params: Optional[bytes] = None
-        if isinstance(install_params, tuple):
+        if explicit_ndef:
             install_params, ndef_params = install_params
         if install_params is None:
             install_params = bytes()
         ip_len = len(install_params)
         install_params = bytes([1, 95, 1, 86, ip_len]) + install_params
-        command: bytes | tuple[bytes, bytes] = install_params
-        if ndef_params is not None:
+        command: bytes | tuple[bytes, Optional[bytes]] = install_params
+        if explicit_ndef:
             command = (install_params, ndef_params)
         self.q_out.put((CommandType.APPLET_REINSTALL, command))
         self.q_in.get(block=True)

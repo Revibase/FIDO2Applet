@@ -74,6 +74,24 @@ public class ExtendedApduTest {
     }
 
     @Test
+    public void makeCredentialReusesExistingResidentKey() {
+        ResponseAPDU first = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
+        assertEquals(0x9000, first.getSW());
+        assertEquals(0x00, first.getData()[0] & 0xFF);
+        assertTrue(first.getData().length > 100);
+
+        ResponseAPDU second = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
+        assertEquals(0x9000, second.getSW());
+        assertEquals(0x00, second.getData()[0] & 0xFF);
+        assertTrue(second.getData().length > 100,
+                "second makeCredential should return attestation for existing RK");
+
+        ResponseAPDU assertion = sendCtap(simulator, GET_ASSERTION_CBOR);
+        assertEquals(0x9000, assertion.getSW());
+        assertEquals(0x00, assertion.getData()[0] & 0xFF);
+    }
+
+    @Test
     @Timeout(15)
     public void makeCredentialShortApduWithGetResponseChaining() {
         ResponseAPDU response = sendCtapShort(simulator, MAKE_CREDENTIAL_CBOR);

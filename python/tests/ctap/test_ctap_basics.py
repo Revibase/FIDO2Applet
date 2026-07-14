@@ -166,19 +166,24 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
         self.assertTrue(assert_res.auth_data.counter > cred_res.auth_data.counter)
 
-    def test_second_makecredential_same_params_rejected(self):
-        self.ctap2.make_credential(**self.basic_makecred_params)
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
+    def test_second_makecredential_same_params_reuses_resident_key(self):
+        first = self.ctap2.make_credential(**self.basic_makecred_params)
+        second = self.ctap2.make_credential(**self.basic_makecred_params)
+        self.assertEqual(
+            first.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )
 
     def test_makecred_ignores_exclude_list(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         params = copy.copy(self.basic_makecred_params)
         params['exclude_list'] = [self.get_allow_list_entry_from_ll_cred(cred_res)]
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.make_credential(**params)
-        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
+        # excludeList is ignored; second makeCredential reuses the resident key.
+        second = self.ctap2.make_credential(**params)
+        self.assertEqual(
+            cred_res.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )
 
     def test_get_assertion_up_false_clears_flag(self):
         cred = self.ctap2.make_credential(**self.basic_makecred_params)
@@ -315,17 +320,21 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
         self.assertEqual(None, res.auth_data.extensions)
 
-    def test_second_resident_same_rp_different_user_rejected(self):
-        self.ctap2.make_credential(**self.basic_makecred_params)
+    def test_second_resident_same_rp_different_user_reuses_key(self):
+        first = self.ctap2.make_credential(**self.basic_makecred_params)
         self.basic_makecred_params['user']['id'] = secrets.token_bytes(16)
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
+        second = self.ctap2.make_credential(**self.basic_makecred_params)
+        self.assertEqual(
+            first.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )
 
-    def test_second_resident_different_rp_rejected(self):
-        self.ctap2.make_credential(**self.basic_makecred_params)
+    def test_second_resident_different_rp_reuses_key(self):
+        first = self.ctap2.make_credential(**self.basic_makecred_params)
         self.basic_makecred_params['rp']['id'] = secrets.token_hex(8) + ".example.com"
         self.basic_makecred_params['user']['id'] = secrets.token_bytes(16)
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, ctx.exception.code)
+        second = self.ctap2.make_credential(**self.basic_makecred_params)
+        self.assertEqual(
+            first.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )

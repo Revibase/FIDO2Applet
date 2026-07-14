@@ -89,21 +89,21 @@ class CTAPMalformedInputTestCase(CTAPTestCase):
                 + display_name +
                 "0482A263616C672664747970656A7075626C69632D6B6579A263616C6739010064747970656A7075626C69632D6B657906A26B6372656450726F74656374016B686D61632D736563726574F507A262726BF5627570F5"
             ))
-            if dname_len == 10:
-                self.assertEqual(CtapError.ERR.SUCCESS, res[0])
-            else:
-                self.assertEqual(CtapError.ERR.KEY_STORE_FULL, res[0])
+            # First call creates the resident key; later calls reuse it.
+            self.assertEqual(CtapError.ERR.SUCCESS, res[0])
 
     def test_bogus_exclude_list_entry_after_valid(self):
         cred = self.ctap2.make_credential(**self.basic_makecred_params)
 
-        with self.assertRaises(CtapError) as e:
-            self.ctap2.make_credential(**self.basic_makecred_params, exclude_list=[
-                self.get_descriptor_from_ll_cred(cred),
-                12334
-            ])
-
-        self.assertEqual(CtapError.ERR.KEY_STORE_FULL, e.exception.code)
+        # excludeList is ignored (including bogus entries); reuse the resident key.
+        second = self.ctap2.make_credential(**self.basic_makecred_params, exclude_list=[
+            self.get_descriptor_from_ll_cred(cred),
+            12334
+        ])
+        self.assertEqual(
+            cred.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )
 
     def test_user_icon_not_text_bytes(self):
         self.basic_makecred_params['user']['icon'] = secrets.token_bytes(16)
