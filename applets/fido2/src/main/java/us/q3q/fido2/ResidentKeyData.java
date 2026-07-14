@@ -10,28 +10,23 @@ import javacardx.crypto.Cipher;
 
 /**
  * Stores discoverable (resident) credential metadata.
+ * Persists credential ID, encrypted user.id, and public key only.
+ * user.name and RP ID are not stored (never returned / never enforced).
  */
 public class ResidentKeyData {
     private static final short IV_LEN = 16;
+    private static final short USER_ID_IV_OFFSET = 0;
 
     private final byte[] IVs;
-    private static final short USER_ID_IV_OFFSET = 0;
-    private static final short USER_NAME_IV_OFFSET = USER_ID_IV_OFFSET + IV_LEN;
-    private static final short RP_IV_OFFSET = USER_NAME_IV_OFFSET + IV_LEN;
-
     private byte[] credential;
     private byte[] userId;
     private byte userIdLength;
-    private byte[] userName;
-    private byte userNameLength;
-    private byte[] rpId;
-    private byte rpIdLength;
     private final byte[] publicKey;
 
-    public ResidentKeyData(RandomData random, AESKey key, Cipher wrapper,
+    public ResidentKeyData(RandomData random,
                            byte[] publicKeyBuffer, short publicKeyOffset, short publicKeyLength) {
-        IVs = new byte[RP_IV_OFFSET + IV_LEN];
-        random.generateData(IVs, (short) 0, (short) IVs.length);
+        IVs = new byte[IV_LEN];
+        random.generateData(IVs, (short) 0, IV_LEN);
 
         publicKey = new byte[publicKeyLength];
         Util.arrayCopyNonAtomic(publicKeyBuffer, publicKeyOffset,
@@ -48,49 +43,28 @@ public class ResidentKeyData {
     }
 
     private short encryptableLength(short rawLength) {
-        short num16s = (short)(rawLength >> 4);
+        short num16s = (short) (rawLength >> 4);
         if ((rawLength & 0x0F) != 0) {
             num16s += 1;
         }
-        return (short)(num16s * 16);
+        return (short) (num16s * 16);
     }
 
-    public void setRpId(AESKey key, Cipher wrapper, byte[] rpIdBuffer, short rpIdOffset, byte rpIdLength) {
-        if (rpId != null) {
-            ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
-        }
-        rpId = new byte[encryptableLength(rpIdLength)];
-        wrapper.init(key, Cipher.MODE_ENCRYPT, IVs, RP_IV_OFFSET, IV_LEN);
-        wrapper.doFinal(rpIdBuffer, rpIdOffset, (short) rpId.length,
-                rpId, (short) 0);
-        this.rpIdLength = rpIdLength;
-    }
-
+    /**
+     * Encrypt user.id into EEPROM in one write.
+     * {@code userIdBuffer} must contain at least {@code encryptableLength(userIdLength)}
+     * bytes from {@code userIdOffset} (zero-padded as needed).
+     */
     public void setUser(AESKey key, Cipher wrapper,
-                        byte[] userIdBuffer, short userIdOffset, byte userIdLength,
-                        byte[] userNameBuffer, short userNameOffset, byte userNameLength) {
+                        byte[] userIdBuffer, short userIdOffset, byte userIdLength) {
         if (userId != null) {
             ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
         }
-        userId = new byte[encryptableLength(userIdLength)];
-        Util.arrayCopy(userIdBuffer, userIdOffset,
-                userId, (short) 0, userIdLength);
+        short encLen = encryptableLength(userIdLength);
+        userId = new byte[encLen];
         wrapper.init(key, Cipher.MODE_ENCRYPT, IVs, USER_ID_IV_OFFSET, IV_LEN);
-        wrapper.doFinal(userId, (short) 0, (short) userId.length,
-                userId, (short) 0);
+        wrapper.doFinal(userIdBuffer, userIdOffset, encLen, userId, (short) 0);
         this.userIdLength = userIdLength;
-
-        if (userNameLength > 64) {
-            userNameLength = 64;
-        }
-
-        userName = new byte[encryptableLength(userNameLength)];
-        Util.arrayCopy(userNameBuffer, userNameOffset,
-                userName, (short) 0, userNameLength);
-        wrapper.init(key, Cipher.MODE_ENCRYPT, IVs, USER_NAME_IV_OFFSET, IV_LEN);
-        wrapper.doFinal(userName, (short) 0, (short) userName.length,
-                userName, (short) 0);
-        this.userNameLength = userNameLength;
     }
 
     public void unpackUserID(AESKey key, Cipher unwrapper, byte[] targetBuffer, short targetOffset) {

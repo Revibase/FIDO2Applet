@@ -122,11 +122,9 @@ public final class BufferManager {
         if (amt > 0xFF) {
             amt = 0xFF;
         }
-        final byte[] apduBuf = apdu.getBuffer();
-        final short apduBufLen = getAPDUBufferLength(apduBuf);
-        short apLowerSpace = (short)(0xFF & apduBuf[(short)(apduBufLen - 4)]);
+        short apLowerSpace = (short) (0xFF & inMemoryBuffer[OFFSET_LOWER_APDU_TOTAL_SPACE]);
         if (amt > apLowerSpace) {
-            apduBuf[(short)(apduBufLen - 4)] = (byte) amt;
+            inMemoryBuffer[OFFSET_LOWER_APDU_TOTAL_SPACE] = (byte) amt;
         }
     }
 
@@ -185,7 +183,7 @@ public final class BufferManager {
                     // Lower APDU buffer has room
                     if ((short) (apLowerUsed + amt) <= (short) (apduBufLen - upperAPDUUsed)) {
                         // ... and it doesn't overlap the already-allocated part of the upper APDU buffer
-                        inMemoryBuffer[OFFSET_LOWER_APDU_USED_SPACE] = (byte)(inMemoryBuffer[OFFSET_UPPER_APDU_USED_SPACE] + amt);
+                        inMemoryBuffer[OFFSET_LOWER_APDU_USED_SPACE] = (byte) (apLowerUsed + amt);
                         return encodeLowerAPDUOffset(apLowerUsed);
                     }
                 }

@@ -10,15 +10,12 @@ public final class TransientStorage {
     private final byte[] tempBytes;
     private static final byte IDX_TEMP_BUF_IDX_STORAGE = 0; // 2 bytes
     private static final byte IDX_TEMP_BUF_IDX_LEN = 2; // 1 byte
-    private static final byte IDX_TEMP_BUF_IDX2_STORAGE = 3; // 2 bytes
-    private static final byte IDX_TEMP_BUF_IDX2_LEN = 5; // 1 byte
-    private static final byte IDX_CONTINUATION_OUTGOING_WRITE_OFFSET = 6; // 2 bytes
-    private static final byte IDX_CONTINUATION_OUTGOING_REMAINING = 8; // 2 bytes
-    private static final byte IDX_CHAINING_INCOMING_READ_OFFSET = 10; // 2 bytes
-    private static final byte IDX_BOOLEAN_OMNIBUS = 12; // 1 byte
-    private static final byte NUM_RESET_BYTES = 13;
+    private static final byte IDX_CONTINUATION_OUTGOING_WRITE_OFFSET = 3; // 2 bytes
+    private static final byte IDX_CONTINUATION_OUTGOING_REMAINING = 5; // 2 bytes
+    private static final byte IDX_CHAINING_INCOMING_READ_OFFSET = 7; // 2 bytes
+    private static final byte IDX_BOOLEAN_OMNIBUS = 9; // 1 byte
+    private static final byte NUM_RESET_BYTES = 10;
 
-    private static final byte BOOL_IDX_STREAM_STATEKEEPING = 0;
     private static final byte BOOL_IDX_OPTION_RK = 3;
     private static final byte BOOL_IDX_AUTHENTICATOR_DISABLED = 4;
     private static final byte BOOL_IDX_OPTION_UP = 5;
@@ -28,16 +25,16 @@ public final class TransientStorage {
     }
 
     private boolean getBoolByIdx(byte idx) {
-        return (byte)((tempBytes[IDX_BOOLEAN_OMNIBUS] & (1 << idx))) != 0;
+        return (byte) ((tempBytes[IDX_BOOLEAN_OMNIBUS] & (1 << idx))) != 0;
     }
 
     private void setBoolByIdx(byte idx, boolean val) {
         if (val) {
             tempBytes[IDX_BOOLEAN_OMNIBUS] =
-                    (byte)(tempBytes[IDX_BOOLEAN_OMNIBUS] | (1 << idx));
+                    (byte) (tempBytes[IDX_BOOLEAN_OMNIBUS] | (1 << idx));
         } else {
             tempBytes[IDX_BOOLEAN_OMNIBUS] =
-                    (byte)(tempBytes[IDX_BOOLEAN_OMNIBUS] & ~(1 << idx));
+                    (byte) (tempBytes[IDX_BOOLEAN_OMNIBUS] & ~(1 << idx));
         }
     }
 
@@ -73,7 +70,7 @@ public final class TransientStorage {
 
     public void increaseChainIncomingReadOffset(short numBytes) {
         Util.setShort(tempBytes, IDX_CHAINING_INCOMING_READ_OFFSET,
-                (short)(Util.getShort(tempBytes, IDX_CHAINING_INCOMING_READ_OFFSET) + numBytes));
+                (short) (Util.getShort(tempBytes, IDX_CHAINING_INCOMING_READ_OFFSET) + numBytes));
     }
 
     public void clearOnDeselect() {
@@ -95,19 +92,6 @@ public final class TransientStorage {
 
     public byte getStoredLen() {
         return tempBytes[IDX_TEMP_BUF_IDX_LEN];
-    }
-
-    public void setStoredVars2(short idx, byte len) {
-        Util.setShort(tempBytes, IDX_TEMP_BUF_IDX2_STORAGE, idx);
-        tempBytes[IDX_TEMP_BUF_IDX2_LEN] = len;
-    }
-
-    public short getStoredIdx2() {
-        return Util.getShort(tempBytes, IDX_TEMP_BUF_IDX2_STORAGE);
-    }
-
-    public byte getStoredLen2() {
-        return tempBytes[IDX_TEMP_BUF_IDX2_LEN];
     }
 
     public void defaultOptions() {
@@ -138,7 +122,8 @@ public final class TransientStorage {
 
     public void clearOutgoingContinuation() {
         setOutgoingContinuation((short) 0, (short) 0);
-        tempBytes[IDX_BOOLEAN_OMNIBUS] = (byte)(tempBytes[IDX_BOOLEAN_OMNIBUS] & 0xFC);
+        // Clear stream-X5C bit (and unused bit 0) without touching RK/UP/disabled.
+        tempBytes[IDX_BOOLEAN_OMNIBUS] = (byte) (tempBytes[IDX_BOOLEAN_OMNIBUS] & 0xFC);
     }
 
     public short getOutgoingContinuationOffset() {

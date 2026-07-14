@@ -74,6 +74,25 @@ public class ErrorCodeInjectionTest {
     }
 
     /**
+     * NDEF push uses the same HMAC check as getAssertion. Clearing the one-shot
+     * push flag and corrupting the tag makes a subsequent makeCredential fail
+     * integrity before any NDEF key material is exported.
+     */
+    @Test
+    public void ndefRepushBlockedByIntegrityFailure() throws Exception {
+        ResponseAPDU first = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
+        assertEquals(0x9000, first.getSW());
+        assertEquals(0x00, first.getData()[0] & 0xFF);
+
+        clearNdefKeyPushed(simulator, FIDO_AID);
+        corruptResidentCredentialMac(simulator, FIDO_AID);
+
+        ResponseAPDU second = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
+        assertEquals(0x9000, second.getSW());
+        assertEquals(FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE, second.getData()[0]);
+    }
+
+    /**
      * XOR the last byte of the resident credential blob (HMAC tag) via the simulator
      * runtime — keeps corruption entirely outside production applet code.
      */
@@ -95,5 +114,17 @@ public class ErrorCodeInjectionTest {
 
         byte[] cred = residentKeys[0].getEncryptedCredentialID();
         cred[cred.length - 1] ^= (byte) 0xFF;
+    }
+
+    static void clearNdefKeyPushed(CardSimulator simulator, AID fidoAid) throws Exception {
+        Field runtimeField = Simulator.class.getDeclaredField("runtime");
+        runtimeField.setAccessible(true);
+        SimulatorRuntime runtime = (SimulatorRuntime) runtimeField.get(simulator);
+        Method getApplet = SimulatorRuntime.class.getDeclaredMethod("getApplet", AID.class);
+        getApplet.setAccessible(true);
+        Applet applet = (Applet) getApplet.invoke(runtime, fidoAid);
+        Field pushed = FIDO2Applet.class.getDeclaredField("ndefKeyPushed");
+        pushed.setAccessible(true);
+        pushed.setBoolean(applet, false);
     }
 }

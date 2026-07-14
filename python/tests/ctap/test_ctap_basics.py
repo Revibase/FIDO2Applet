@@ -313,6 +313,31 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
         self.assertEqual(self.rp_id_hash('___different'), assert_res.auth_data.rp_id_hash)
 
+    def test_first_enroll_user_id_wins(self):
+        # Single-slot appliance: first makeCredential stores user.id; later enrolls reuse
+        # the same credential and ignore new user/RP metadata. getAssertion always returns
+        # the first-enroll user.id even for a different RP.
+        first_user_id = secrets.token_bytes(16)
+        self.basic_makecred_params['user']['id'] = first_user_id
+        first = self.ctap2.make_credential(**self.basic_makecred_params)
+
+        second_params = dict(self.basic_makecred_params)
+        second_params['user'] = dict(self.basic_makecred_params['user'])
+        second_params['user']['id'] = secrets.token_bytes(16)
+        second_params['user']['name'] = 'other-user'
+        second_params['rp'] = {'id': 'other.example', 'name': 'Other'}
+        second = self.ctap2.make_credential(**second_params)
+        self.assertEqual(
+            first.auth_data.credential_data.credential_id,
+            second.auth_data.credential_data.credential_id,
+        )
+
+        assert_res = self.ctap2.get_assertion(
+            rp_id='other.example',
+            client_data_hash=self.get_random_client_data(),
+        )
+        self.assertEqual(first_user_id, assert_res.user['id'])
+
     def test_make_credential_with_bogus_extension(self):
         res = self.ctap2.make_credential(
             **self.basic_makecred_params,

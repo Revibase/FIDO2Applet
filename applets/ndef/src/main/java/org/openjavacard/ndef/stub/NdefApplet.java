@@ -227,7 +227,10 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
 
     /** 32-byte AES-256 wrapping key material, randomly generated at install time. */
     private final byte[] wrappingKeySpace;
-    /** AES key object backed by wrappingKeySpace. */
+    /**
+     * AES key object filled from {@link #wrappingKeySpace}. Prefer transient so
+     * {@code setKey} does not rewrite EEPROM every power cycle / deselect.
+     */
     private final AESKey wrappingKey;
     /** AES-CBC cipher for encrypting the pushed private key. */
     private final Cipher symmetricWrapper;
@@ -251,7 +254,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     private final byte[] storedBaseUrl;
     /** 2-byte big-endian length of valid bytes in storedBaseUrl. */
     private final byte[] storedUrlLen;
-    /** Wear-leveled monotonic counter; batched EEPROM writes on URL generation. */
+    /** Wear-leveled monotonic counter; every URL generation persists ~1 EEPROM byte. */
     private final SigOpCounter sigCounter;
     /** 1-byte flag; non-zero once the encrypted key is committed and ready to use. */
     private final byte[] keyValid;
@@ -323,8 +326,8 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         sigCounter           = new SigOpCounter();
         keyValid             = new byte[1];
 
-        // AES wrapping setup
-        wrappingKey        = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
+        // AES wrapping setup (transient AES preferred — same pattern as FIDO2Applet)
+        wrappingKey        = getWrappingAESKey();
         symmetricWrapper   = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
         symmetricUnwrapper = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
 
@@ -338,7 +341,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
 
         // Generate a random AES-256 wrapping key at install time
         rng.generateData(wrappingKeySpace, (short) 0, (short) 32);
-        wrappingKey.setKey(wrappingKeySpace, (short) 0);
+        loadWrappingKey();
         rng.generateData(keyVerificationKey, (short) 0, (short) 32);
 
         // Parse install params: AD bytes are the base URL (optional; empty = no URL, serve placeholder)
@@ -416,6 +419,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         if (pendingPushReady[0] == 0) {
             return;
         }
+        loadWrappingKey();
         rng.generateData(commitScratch, COMM_ENC_IV, AES_BLOCK_LEN);
         symmetricWrapper.init(wrappingKey, Cipher.MODE_ENCRYPT,
                 commitScratch, COMM_ENC_IV, AES_BLOCK_LEN);
@@ -425,9 +429,10 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         JCSystem.beginTransaction();
         boolean ok = false;
         try {
-            Util.arrayCopyNonAtomic(commitScratch, COMM_ENC_IV,
+            // Transactional copy into EEPROM so a tear mid-write can abort cleanly.
+            Util.arrayCopy(commitScratch, COMM_ENC_IV,
                     storedEncryptedKey, (short) 0, (short) (AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN));
-            Util.arrayCopyNonAtomic(pendingKeyStaging, PENDING_PUB_OFF,
+            Util.arrayCopy(pendingKeyStaging, PENDING_PUB_OFF,
                     storedPubKey, (short) 0, NdefKeyStore.PUB_KEY_LEN);
             computeAndStoreKeyMac();
             keyValid[0] = 1;
@@ -452,7 +457,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         hmacSha256(keyVerificationKey, (short) 0,
                 commitScratch, COMM_HMAC_MSG, KEY_BLOB_LEN,
                 commitScratch, COMM_HMAC_OUT);
-        Util.arrayCopyNonAtomic(commitScratch, COMM_HMAC_OUT, storedKeyMac, (short) 0, KEY_MAC_LEN);
+        Util.arrayCopy(commitScratch, COMM_HMAC_OUT, storedKeyMac, (short) 0, KEY_MAC_LEN);
     }
 
     private boolean verifyStoredKeyMac() {
@@ -497,10 +502,38 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
      * The caller must call {@code signingKey.clearKey()} and zero SCR_PRIVKEY after use.
      */
     private void decryptKeyIntoScratch() {
+        loadWrappingKey();
         symmetricUnwrapper.init(wrappingKey, Cipher.MODE_DECRYPT,
                 storedEncryptedKey, (short) 0, AES_BLOCK_LEN);
         symmetricUnwrapper.doFinal(storedEncryptedKey, AES_BLOCK_LEN, NdefKeyStore.PRIV_KEY_LEN,
                 sigScratch, SCR_PRIVKEY);
+    }
+
+    /**
+     * Ensure the wrapping AES key is loaded from persistent key material.
+     * Prefer transient AES so setKey writes RAM; persistent AES only calls setKey
+     * when uninitialized.
+     */
+    private void loadWrappingKey() {
+        if (!wrappingKey.isInitialized()) {
+            wrappingKey.setKey(wrappingKeySpace, (short) 0);
+        }
+    }
+
+    private static AESKey getWrappingAESKey() {
+        try {
+            return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT,
+                    KeyBuilder.LENGTH_AES_256, false);
+        } catch (CryptoException e) {
+            // unsupported
+        }
+        try {
+            return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_RESET,
+                    KeyBuilder.LENGTH_AES_256, false);
+        } catch (CryptoException e) {
+            // unsupported
+        }
+        return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
     }
 
     // -----------------------------------------------------------------------

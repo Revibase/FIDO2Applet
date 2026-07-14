@@ -35,7 +35,9 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | Behavior | Detail |
 |----------|--------|
 | `rk: true` | **Required** — omit or `false` → `INVALID_OPTION` |
-| Second credential | Reuses the existing resident key (same credential ID) |
+| Second credential | Reuses the existing resident key (same credential ID); ignores new user/RP fields |
+| User identity | **First enroll wins** — only the first `user.id` is stored in EEPROM; later `makeCredential` does not rewrite it |
+| `user.name` / RP ID | Accepted in the request CBOR but **not stored** |
 | `excludeList` | Ignored |
 | `up` option | `true` accepted (CTAP 2.1 style, sent by real platforms); `false` → `INVALID_OPTION` |
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
@@ -49,7 +51,7 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 |----------|--------|
 | `allowList` | Ignored — always signs with the resident key if present |
 | RP ID | Not enforced — signs over whatever RP ID the host sends |
-| User `id` | Returned when resident key is used |
+| User `id` | Returned when resident key is used — always the **first-enroll** handle (may not match another RP’s registration) |
 | `up: false` | Accepted — signs silently with the UP flag cleared |
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
