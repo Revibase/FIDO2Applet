@@ -64,10 +64,6 @@ public class VSim {
         sim.selectApplet(fidoAppletAID);
     }
 
-    public static synchronized void selectNdef(Simulator sim) {
-        sim.selectApplet(ndefAppletAID);
-    }
-
     public static Simulator startForegroundSimulator() {
         return new Simulator();
     }

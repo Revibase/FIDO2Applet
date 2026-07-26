@@ -3,16 +3,12 @@ package us.q3q.fido2;
 import javacard.framework.JCSystem;
 
 /**
- * 32-bit always-increasing counter that avoids writing to the same flash location too often
+ * 32-bit always-increasing counter that avoids writing to the same flash location too often.
  *
- * Uses 67 bytes of flash to provide a 32-bit counter where the most-written byte is written 256
- * times in a row, but only takes 1/64 of the overall write load.
- *
- * <p>Every increment is persisted to EEPROM immediately. RAM batching is intentionally NOT used:
- * on a contactless card each tap is a full power cycle with no deselect callback, so any increment
- * held in CLEAR_ON_RESET memory would be silently lost and the counter would stop advancing (or
- * even move backwards across taps). The wear-leveled layout keeps the per-op cost to a single byte
- * write in the common case, so persisting every increment is cheap.
+ * <p>Uses 67 bytes of flash so the hottest byte is written 256 times in a row but only
+ * takes 1/64 of the overall write load. Every increment is persisted immediately (no RAM
+ * batching): lost power mid-operation must not roll the counter backwards. The wear-leveled
+ * layout keeps the common case to a single byte write.
  */
 public final class SigOpCounter {
     private final byte[] firstBytes;

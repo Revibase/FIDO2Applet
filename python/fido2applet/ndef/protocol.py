@@ -208,11 +208,6 @@ def select_ndef_application_phone(transmit: Callable[[bytes], bytes]) -> None:
     check_sw(transmit(apdu), label="SELECT NDEF application (phone)", apdu=apdu)
 
 
-def select_ndef_applet(transmit: Callable[[bytes], bytes]) -> None:
-    """Alias for select_ndef_application_phone."""
-    select_ndef_application_phone(transmit)
-
-
 def select_ndef_type4_file(transmit: Callable[[bytes], bytes], file_id: int) -> None:
     """SELECT a Type 4 file by ID (P2=0x0C, as Android NFC stack uses)."""
     apdu = bytes([
@@ -224,15 +219,6 @@ def select_ndef_type4_file(transmit: Callable[[bytes], bytes], file_id: int) -> 
 
 def select_ndef_file_cc(transmit: Callable[[bytes], bytes]) -> None:
     select_ndef_type4_file(transmit, FILEID_NDEF_CAPABILITIES)
-
-
-def select_ndef_file_ndef(transmit: Callable[[bytes], bytes], file_id: int = FILEID_NDEF_DATA) -> None:
-    select_ndef_type4_file(transmit, file_id)
-
-
-def select_ndef_file(transmit: Callable[[bytes], bytes], file_id: int) -> None:
-    """Alias for select_ndef_type4_file."""
-    select_ndef_type4_file(transmit, file_id)
 
 
 def _read_binary_chunk(
@@ -328,15 +314,6 @@ def read_ndef_type4_phone(
             "card may be serving corrupt data or stale CAP"
         )
     return read_binary(transmit, 2, nlen)
-
-
-def read_ndef_data_file(
-    transmit: Callable[[bytes], bytes],
-    *,
-    select_applet: bool = True,
-) -> bytes:
-    """Alias for read_ndef_type4_phone."""
-    return read_ndef_type4_phone(transmit, select_applet=select_applet)
 
 
 def parse_ndef_uri(file_payload: bytes) -> str:
@@ -461,8 +438,18 @@ def b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
-def verify_signed_ndef_uri(uri: str, base_url: str | None = None) -> None:
-    """Verify NDEF signed URL: ECDSA P-256 SHA-256 over counter||nonce."""
+def verify_signed_ndef_uri(
+    uri: str,
+    base_url: str | None = None,
+    *,
+    min_counter: int | None = None,
+) -> None:
+    """Verify NDEF signed URL: ECDSA P-256 SHA-256 over counter||nonce.
+
+    Anti-replay is server-side (NFC Type 4 is read-only). Persist the last-seen
+    counter per ``pk`` and pass ``min_counter=last + 1`` to reject replays.
+    Optional ``base_url`` only checks that the URI starts with that prefix.
+    """
     if base_url is not None and not uri.startswith(base_url):
         raise ValueError(f"NDEF URI does not start with {base_url!r}: {uri!r}")
 
@@ -481,6 +468,9 @@ def verify_signed_ndef_uri(uri: str, base_url: str | None = None) -> None:
     counter = int(parse_query_param(uri, "c"))
     if counter < 0 or counter > 0xFFFFFFFF:
         raise ValueError(f"counter out of uint32 range: {counter}")
+
+    if min_counter is not None and counter < min_counter:
+        raise ValueError(f"counter {counter} below min_counter {min_counter}")
 
     message = counter.to_bytes(4, "big") + nonce
     public_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), compressed_pk)

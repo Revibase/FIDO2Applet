@@ -17,7 +17,7 @@ import java.util.ArrayList;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Example (only example) unit tests with jcardsim
+ * Basic APDU framing smoke tests with jcardsim.
  */
 public class AppletBasicTest {
 

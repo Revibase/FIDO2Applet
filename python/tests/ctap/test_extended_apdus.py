@@ -42,7 +42,7 @@ class ExtendedAPDUTestCase(BasicAttestationTestCase):
         self.basic_makecred_params['options'] = {'rk': True}
         cred = self.ctap2.make_credential(**self.basic_makecred_params)
         assert_res = self.get_assertion(rp_id=self.rp_id)
-        self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
+        self.assertEqual(cred.auth_data.credential_data.credential_id, assert_res.user['id'])
         self.assertEqual(
             cred.auth_data.credential_data.credential_id,
             assert_res.credential['id'],

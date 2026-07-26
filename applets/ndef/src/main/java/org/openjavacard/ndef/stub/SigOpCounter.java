@@ -5,10 +5,10 @@ import javacard.framework.JCSystem;
 /**
  * 32-bit always-increasing counter that avoids writing to the same flash location too often.
  *
- * <p>Duplicate of the FIDO2 wear-leveled counter (67 bytes EEPROM). Every increment is persisted
- * to EEPROM immediately: on a contactless card each NDEF tap is a full power cycle with no deselect
- * callback, so an increment held only in RAM would be lost and the signed-URL counter would never
- * advance. The wear-leveled layout keeps the per-tap cost to a single byte write in the common case.
+ * <p>Duplicate of the FIDO2 wear-leveled counter (67 bytes EEPROM). Independent of the
+ * FIDO2 counter. Every increment is persisted immediately: an NDEF tap is a full power
+ * cycle with no deselect callback, so a RAM-only bump would be lost. The wear-leveled
+ * layout keeps the common case to a single byte write.
  */
 public final class SigOpCounter {
     private final byte[] firstBytes;

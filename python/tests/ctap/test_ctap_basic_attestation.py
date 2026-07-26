@@ -56,7 +56,7 @@ class CTAPBasicAttestationTestCase(BasicAttestationTestCase):
 
         assert_res = self.get_assertion_from_cred(cred_res, client_data=assert_client_data)
         self.assertIsNone(assert_res.number_of_credentials)
-        self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
+        self.assertEqual(cred_res.auth_data.credential_data.credential_id, assert_res.user['id'])
         self.assertEqual(cred_res.auth_data.credential_data.credential_id,
                          assert_res.credential['id'])
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -225,6 +226,10 @@ class ProvisionState:
             json.dump(self.to_dict(), f, indent=2)
             f.write("\n")
         tmp.replace(path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     @classmethod
     def load(cls, path: Path) -> ProvisionState:

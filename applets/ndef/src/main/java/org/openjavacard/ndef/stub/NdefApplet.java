@@ -39,25 +39,17 @@ import javacardx.crypto.Cipher;
 
 
 /**
- * NDEF Type 4 applet that signs URLs with its own AES-protected EC key.
+ * NDEF Type 4 applet that signs URLs with an AES-wrapped EC key.
  *
- * <p>The base URL is configured at install time via the application data (AD)
- * install parameter — the AD bytes are the URL string directly.
- *
- * <p>FIDO2 pushes the credential's private key and compressed public key once
- * during {@code makeCredential} (via {@link NdefKeyStore}). The pushed private
- * key is stored AES-256-CBC encrypted under a randomly-generated wrapping key.
- * Note this is <em>logical</em> protection only, mirroring the FIDO2 applet's
- * {@code lowSecurityWrappingKey}: the wrapping key ({@link #wrappingKeySpace})
- * lives in plaintext in EEPROM alongside the ciphertext, so an attacker who can
- * dump EEPROM recovers the private key. It defends against logical read paths,
- * not physical/fault extraction. After provisioning this applet is fully
- * self-contained: on the first NDEF E104 data read it decrypts the key into
- * CLEAR_ON_DESELECT transient memory, signs a fresh counter+nonce, encodes the
- * URL, and clears the plaintext key — no runtime call to the FIDO2 applet is
- * ever needed. Subsequent reads in the same session return the cached payload.
- *
- * <p>If no key has been pushed yet the applet serves a static placeholder URL.
+ * <p>Base URL comes from install application data. FIDO2 pushes the credential
+ * private key and compressed public key once during {@code makeCredential}
+ * ({@link NdefKeyStore}). The private key is AES-256-CBC encrypted under a
+ * random wrapping key in EEPROM (logical protection only: the wrapping key
+ * sits in plaintext next to the ciphertext). Staging survives until the first
+ * NDEF SELECT, where encryption runs; the first E104 read decrypts into
+ * CLEAR_ON_DESELECT scratch, signs {@code counter || nonce}, builds the URL,
+ * and clears the plaintext key. Later reads in the same session reuse the
+ * cached payload. Until a key is pushed, a static placeholder URL is served.
  */
 public final class NdefApplet extends Applet implements NdefKeyStore {
 
@@ -116,15 +108,14 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     // Offsets inside sigScratch
     private static final short SCR_COUNTER    = 0;    // 4 bytes  big-endian counter
     private static final short SCR_NONCE      = 4;    // 8 bytes  random nonce
-    private static final short SCR_SIGNMSG    = 12;   // 12 bytes counter||nonce (input to sign)
-    private static final short SCR_DER_SIG    = 24;   // 80 bytes DER signature output
-    private static final short SCR_RAW_SIG    = 104;  // 64 bytes normalised raw sig
-    private static final short SCR_DIV        = 168;  // 8 bytes  scratch for decimal division
-    private static final short SCR_DECIMAL    = 176;  // 11 bytes max uint32 decimal digits
-    private static final short SCR_PRIVKEY    = 187;  // 32 bytes decrypted private key (cleared after use)
-    private static final short SCR_SIZE       = 219;
+    private static final short SCR_DER_SIG    = 12;   // 80 bytes DER signature output
+    private static final short SCR_RAW_SIG    = 92;   // 64 bytes normalised raw sig
+    private static final short SCR_DIV        = 156;  // 8 bytes  scratch for decimal division
+    private static final short SCR_DECIMAL    = 164;  // 11 bytes max uint32 decimal digits
+    private static final short SCR_PRIVKEY    = 175;  // 32 bytes decrypted private key (cleared after use)
+    private static final short SCR_SIZE       = 207;
 
-    /** CLEAR_ON_DESELECT scratch for encrypt-on-first-read and HMAC (NDEF selected only). */
+    /** CLEAR_ON_DESELECT scratch for encrypt-on-SELECT and HMAC. */
     private static final short COMM_ENC_IV    = 0;
     private static final short COMM_ENC_CT    = 16;
     private static final short COMM_HMAC_MSG  = 64;
@@ -212,8 +203,8 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     private byte[] commitScratch;
 
     /**
-     * Pushed key bytes awaiting encrypt-on-first-NDEF-use.
-     * CLEAR_ON_RESET: must survive FIDO deselect between makeCredential push and first NDEF read.
+     * Pushed key bytes awaiting encrypt-on-first-NDEF-select.
+     * CLEAR_ON_RESET so the push survives FIDO deselect (AES needs NDEF selected).
      */
     private byte[] pendingKeyStaging;
 
@@ -326,7 +317,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         sigCounter           = new SigOpCounter();
         keyValid             = new byte[1];
 
-        // AES wrapping setup (transient AES preferred — same pattern as FIDO2Applet)
+        // AES wrapping setup (prefer transient AES key object)
         wrappingKey        = getWrappingAESKey();
         symmetricWrapper   = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
         symmetricUnwrapper = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
@@ -368,7 +359,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
             return null;
         }
         if (clientAID == null
-                || !clientAID.partialEquals(FIDO_PARTNER_AID, (short) 0, (byte) FIDO_PARTNER_AID.length)) {
+                || !clientAID.equals(FIDO_PARTNER_AID, (short) 0, (byte) FIDO_PARTNER_AID.length)) {
             return null;
         }
         return this;
@@ -393,9 +384,8 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     }
 
     /**
-     * Marks pushed key material ready in transient staging. Encryption into EEPROM is
-     * deferred to the first NDEF SELECT/READ while this applet is selected — AES on
-     * physical cards requires the NDEF applet context.
+     * Marks pushed key material ready in transient staging.
+     * Encryption into EEPROM is deferred to the first NDEF SELECT.
      */
     public void commit() {
         if (keyValid[0] != 0 || pendingPushReady[0] != 0) {
@@ -593,22 +583,18 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
             ISOException.throwIt(ISO7816.SW_DATA_INVALID);
         }
 
-        // Transactional so a tear during the ~1-in-256 byte-rollover cannot corrupt
-        // the counter (consistent with the transaction used by encryptPendingKey above).
+        // Tear-safe counter bump (~1-in-256 byte rollover).
         if (!sigCounter.increment((short) 1)) {
             ISOException.throwIt(ISO7816.SW_FILE_FULL);
         }
         sigCounter.pack(sigScratch, SCR_COUNTER);
         rng.generateData(sigScratch, SCR_NONCE, NONCE_LEN);
-        Util.arrayCopyNonAtomic(sigScratch, SCR_COUNTER, sigScratch, SCR_SIGNMSG, (short) 12);
 
-        // Decrypt private key into CLEAR_ON_DESELECT scratch
         decryptKeyIntoScratch();
         loadSigningKey();
         ecSig.init(signingKey, Signature.MODE_SIGN);
-        short derLen = ecSig.sign(sigScratch, SCR_SIGNMSG, (short) 12, sigScratch, SCR_DER_SIG);
+        short derLen = ecSig.sign(sigScratch, SCR_COUNTER, (short) 12, sigScratch, SCR_DER_SIG);
         signingKey.clearKey();
-        // Clear decrypted private key from transient memory immediately after signing
         Util.arrayFillNonAtomic(sigScratch, SCR_PRIVKEY, NdefKeyStore.PRIV_KEY_LEN, (byte) 0);
 
         normalizeDerSigToRaw64(sigScratch, SCR_DER_SIG, derLen, sigScratch, SCR_RAW_SIG);
@@ -896,9 +882,11 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
 
         if (selectingApplet()) {
             vars[VAR_SELECTED_FILE] = FILEID_NONE;
-            // Do NOT build the signed payload here: SELECT and capability (E103)
-            // probes must not consume a counter value or run an ECDSA sign. The
-            // payload is generated lazily on the first E104 data read.
+            vars[VAR_PAYLOAD_READY] = 0;
+            // Encrypt staged key on SELECT; defer signing until first E104 read.
+            if (pendingPushReady[0] != 0) {
+                encryptPendingKey();
+            }
             return;
         }
 
@@ -950,10 +938,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         byte[] buffer = apdu.getBuffer();
         short fileId = vars[VAR_SELECTED_FILE];
         short offset  = Util.getShort(buffer, ISO7816.OFFSET_P1);
-        // Only an E104 data read needs the dynamic payload. The capability file
-        // (E103) is static, so a CC read never triggers signing. ensurePayloadReady
-        // is idempotent within a session (VAR_PAYLOAD_READY), so building on the
-        // first data read (whatever its offset) is safe and must precede fileLength.
+        // E104 only — CC (E103) is static and must not trigger a sign.
         if (fileId == FILEID_NDEF_DATA) {
             ensurePayloadReady();
         }

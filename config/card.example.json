@@ -10,8 +10,7 @@
     "fido_package": "A000000647",
     "fido_applet": "A0000006472F0001",
     "ndef_package": "D276000177100211020001",
-    "ndef_applet": "D2760000850101",
-    "ndef_service_id": "3F"
+    "ndef_applet": "D2760000850101"
   },
 
   "gp": {

@@ -235,9 +235,9 @@ class CTAPBasicsTestCase(CTAPTestCase):
 
     def test_makecred_rk_max_len_user_id(self):
         self.basic_makecred_params['user']['id'] = secrets.token_bytes(64)
-        self.ctap2.make_credential(**self.basic_makecred_params)
+        cred = self.ctap2.make_credential(**self.basic_makecred_params)
         assert_res = self.get_assertion(rp_id=self.rp_id)
-        self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
+        self.assertEqual(cred.auth_data.credential_data.credential_id, assert_res.user['id'])
 
     def test_stale_allowlist_ignored_uses_resident_key(self):
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
@@ -279,7 +279,7 @@ class CTAPBasicsTestCase(CTAPTestCase):
         assert_client_data = self.get_random_client_data()
         assert_res = self.get_assertion_from_cred(cred_res, client_data=assert_client_data)
         self.assertEqual(cred_res.auth_data.credential_data.credential_id, assert_res.credential['id'])
-        self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
+        self.assertEqual(cred_res.auth_data.credential_data.credential_id, assert_res.user['id'])
         cred_res.auth_data.credential_data.public_key.verify(
             assert_res.auth_data + assert_client_data, assert_res.signature
         )
@@ -299,17 +299,16 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
 
     def test_empty_allowlist_uses_resident_key(self):
-        self.ctap2.make_credential(**self.basic_makecred_params)
+        cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         assert_res = self.get_assertion(
             rp_id=self.rp_id,
             client_data=self.get_random_client_data(),
             allow_list=[],
         )
-        self.assertEqual(self.basic_makecred_params['user']['id'], assert_res.user['id'])
+        self.assertEqual(cred_res.auth_data.credential_data.credential_id, assert_res.user['id'])
 
     def test_non_matching_rp_still_signs(self):
-        # The RP ID check is intentionally skipped: a get_assertion for any RP ID succeeds using
-        # the resident key, signing over whatever RP ID hash the platform sent in the request.
+        # RP ID is not enforced — signs over whatever RP ID hash the host sends.
         cred_res = self.ctap2.make_credential(**self.basic_makecred_params)
         assert_res = self.ctap2.get_assertion(
             rp_id='___different',
@@ -320,12 +319,8 @@ class CTAPBasicsTestCase(CTAPTestCase):
         )
         self.assertEqual(self.rp_id_hash('___different'), assert_res.auth_data.rp_id_hash)
 
-    def test_first_enroll_user_id_wins(self):
-        # Single-slot appliance: first makeCredential stores user.id; later enrolls reuse
-        # the same credential and ignore new user/RP metadata. getAssertion always returns
-        # the first-enroll user.id even for a different RP.
-        first_user_id = secrets.token_bytes(16)
-        self.basic_makecred_params['user']['id'] = first_user_id
+    def test_assertion_user_id_is_compressed_public_key(self):
+        self.basic_makecred_params['user']['id'] = secrets.token_bytes(16)
         first = self.ctap2.make_credential(**self.basic_makecred_params)
 
         second_params = dict(self.basic_makecred_params)
@@ -343,7 +338,10 @@ class CTAPBasicsTestCase(CTAPTestCase):
             rp_id='other.example',
             client_data_hash=self.get_random_client_data(),
         )
-        self.assertEqual(first_user_id, assert_res.user['id'])
+        cred_id = first.auth_data.credential_data.credential_id
+        self.assertEqual(33, len(assert_res.user['id']))
+        self.assertEqual(cred_id, assert_res.user['id'])
+        self.assertEqual(cred_id, assert_res.credential['id'])
 
     def test_make_credential_with_bogus_extension(self):
         res = self.ctap2.make_credential(

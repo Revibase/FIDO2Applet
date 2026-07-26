@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from fido2.ctap2 import Ctap2
 
+from fido2applet.attestation import get_pcsc_device
 from fido2applet.pcsc_util import ndef_transmit
 from fido2applet.ndef.protocol import (
     parse_cc_ndef_file_id,
@@ -21,14 +22,8 @@ from fido2applet.ndef.protocol import (
 )
 
 
-def format_sw(sw: int) -> str:
-    return f"{sw:04X}"
-
-
 def _ctap2(reader_name: Optional[str] = None) -> Ctap2:
-    from fido2applet.ndef_vendor import ctap2 as vendor_ctap2
-
-    return vendor_ctap2(reader_name)
+    return Ctap2(get_pcsc_device(reader_name))
 
 
 def probe_ndef(
@@ -42,7 +37,7 @@ def probe_ndef(
     results: dict[str, Any] = {"reader": reader_name}
 
     log("==> NDEF diagnostics")
-    log("    NdefApplet signs URLs on first READ of E104 (offset 0) in a session.")
+    log("    NdefApplet encrypts the staged key on SELECT; signs on first E104 READ.")
 
     log("\n[1] CTAP GET_INFO (FIDO2 selectable)")
     try:

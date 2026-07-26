@@ -17,7 +17,6 @@ public final class TransientStorage {
     private static final byte NUM_RESET_BYTES = 10;
 
     private static final byte BOOL_IDX_OPTION_RK = 3;
-    private static final byte BOOL_IDX_AUTHENTICATOR_DISABLED = 4;
     private static final byte BOOL_IDX_OPTION_UP = 5;
 
     public TransientStorage() {
@@ -36,14 +35,6 @@ public final class TransientStorage {
             tempBytes[IDX_BOOLEAN_OMNIBUS] =
                     (byte) (tempBytes[IDX_BOOLEAN_OMNIBUS] & ~(1 << idx));
         }
-    }
-
-    public boolean authenticatorDisabled() {
-        return getBoolByIdx(BOOL_IDX_AUTHENTICATOR_DISABLED);
-    }
-
-    public void disableAuthenticator() {
-        setBoolByIdx(BOOL_IDX_AUTHENTICATOR_DISABLED, true);
     }
 
     public boolean shouldStreamX5CLater() {
@@ -122,7 +113,6 @@ public final class TransientStorage {
 
     public void clearOutgoingContinuation() {
         setOutgoingContinuation((short) 0, (short) 0);
-        // Clear stream-X5C bit (and unused bit 0) without touching RK/UP/disabled.
         tempBytes[IDX_BOOLEAN_OMNIBUS] = (byte) (tempBytes[IDX_BOOLEAN_OMNIBUS] & 0xFC);
     }
 

@@ -18,7 +18,7 @@ from fido2applet.ndef.protocol import (
 
 
 class PcscConnection:
-    """Minimal PC/SC transmit wrapper compatible with ndef_util helpers."""
+    """Minimal PC/SC transmit wrapper for NDEF Type 4 helpers."""
 
     def __init__(self, connection: CardConnection):
         self._conn = connection

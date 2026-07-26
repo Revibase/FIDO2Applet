@@ -4,14 +4,14 @@ import javacard.framework.Shareable;
 
 /**
  * Shareable interface implemented by {@link NdefApplet} so FIDO2 can push the
- * signing key once (during {@code makeCredential}) while FIDO2 is selected and
- * AES decryption works normally.
+ * credential private key and compressed public key once during
+ * {@code makeCredential} (while FIDO2 is selected).
  *
- * <p>After the push, NdefApplet signs URLs independently on every NDEF read —
- * no runtime Shareable call to FIDO2 is needed.
+ * <p>Bytes land in CLEAR_ON_RESET staging. {@link #commit} only marks them ready;
+ * NdefApplet AES-wraps on the first NDEF SELECT and signs on the first E104 read.
+ * No runtime Shareable call back to FIDO2 is needed after the push.
  *
- * <p>All parameters are primitives so no byte array ever crosses the applet
- * firewall boundary.
+ * <p>All parameters are primitives so no byte array crosses the applet firewall.
  */
 public interface NdefKeyStore extends Shareable {
 
@@ -37,9 +37,8 @@ public interface NdefKeyStore extends Shareable {
     void setPubKeyByte(short offset, byte value);
 
     /**
-     * Atomically persists all previously received bytes and marks the key as
-     * valid. After this returns, NdefApplet will sign URLs locally on every
-     * NDEF read.
+     * Marks previously received key bytes ready in transient staging.
+     * Encryption into EEPROM happens on the first NDEF SELECT.
      */
     void commit();
 }

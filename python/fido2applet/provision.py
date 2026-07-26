@@ -127,38 +127,3 @@ def build_make_credential_params(config: dict[str, Any]) -> dict[str, Any]:
 def wrap_fido_javacard_install_params(fido_params: bytes) -> bytes:
     """Prefix FIDO install CBOR with JavaCard package/platform header (jcardsim)."""
     return bytes([1, 95, 1, 86, len(fido_params)]) + fido_params
-
-
-GP_SCP_MAC_OVERHEAD = 8
-
-
-def gp_tagged_install_params(params: bytes) -> bytes:
-    """Mirror GlobalPlatformPro --params C9 wrapping."""
-    if params and params[0] == 0xC9:
-        return params
-    return bytes([0xC9, len(params)]) + params
-
-
-def gp_install_and_make_selectable_data_len(
-    package_aid_hex: str,
-    applet_aid_hex: str,
-    params_hex: str,
-    *,
-    privileges_body_len: int = 1,
-) -> int:
-    """Bytes in GP INSTALL (install and make selectable) command data."""
-    pkg = bytes.fromhex(package_aid_hex)
-    app = bytes.fromhex(applet_aid_hex)
-    install_params = gp_tagged_install_params(bytes.fromhex(params_hex))
-    total = 0
-    for aid in (pkg, app, app):
-        total += 1 + len(aid)
-    total += 1 + privileges_body_len
-    total += 1 + len(install_params)
-    total += 1  # empty install token (length 0)
-    return total
-
-
-def gp_min_block_size_for_command_data(data_len: int) -> int:
-    """Minimum gp so SCP-wrapped command data fits (MAC subtracts 8)."""
-    return data_len + GP_SCP_MAC_OVERHEAD

@@ -36,7 +36,7 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 |----------|--------|
 | `rk: true` | **Required** — omit or `false` → `INVALID_OPTION` |
 | Second credential | Reuses the existing resident key (same credential ID); ignores new user/RP fields |
-| User identity | **First enroll wins** — only the first `user.id` is stored in EEPROM; later `makeCredential` does not rewrite it |
+| User identity | Request `user.id` is required by clients but **not stored**. Assertion `user.id` is always the credential ID |
 | `user.name` / RP ID | Accepted in the request CBOR but **not stored** |
 | `excludeList` | Ignored |
 | `up` option | `true` accepted (CTAP 2.1 style, sent by real platforms); `false` → `INVALID_OPTION` |
@@ -52,13 +52,13 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 |----------|--------|
 | `allowList` | Ignored — always signs with the resident key if present |
 | RP ID | Not enforced — signs over whatever RP ID the host sends |
-| User `id` | Returned when resident key is used — always the **first-enroll** handle (may not match another RP’s registration) |
+| User `id` | Always the **33-byte compressed public key** (same as credential ID / NDEF `pk`) |
 | `up: false` | Accepted — signs silently with the UP flag cleared |
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | No resident key | `NO_CREDENTIALS` |
 | Uninitialized / cleared private key | `NO_CREDENTIALS` |
-| Counter | Wear-leveled 32-bit |
+| Counter | Wear-leveled 32-bit (independent of the NDEF counter) |
 
 ## U2F (`U2F_V2`)
 
@@ -80,9 +80,11 @@ Raw U2F uses `CLA 0x00`; errors are ISO 7816 status words, not CTAP bytes.
 
 ## NDEF (contactless)
 
-Not part of FIDO. On NFC read, the NDEF applet returns an HTTPS URL with query params `pk`, `n`, `c`, `s` where `s` is an ECDSA signature over `(counter || nonce)` using the same P-256 key from `makeCredential`.
+Not part of FIDO. On NFC read, the NDEF applet returns an HTTPS URL with query params `pk`, `n`, `c`, `s` where `s` is an ECDSA P-256 signature over `(counter || nonce)` using the same P-256 key from `makeCredential`. `pk` equals the FIDO credential ID / assertion `user.id`.
 
-Placeholder URL until `makeCredential` runs. See [applets/ndef/README.md](../applets/ndef/README.md).
+NDEF’s signature counter is **independent** of FIDO2’s. Verifiers should check the signature and **should** reject replays by persisting the last-seen `c` per `pk` (pass `min_counter=last+1` to `verify_signed_ndef_uri`). NFC Type 4 is read-only; anti-replay is server-side. Optional `base_url` on the verifier only checks URI prefix (the base URL is not covered by the signature).
+
+Placeholder URL until `makeCredential` runs. Key material pushed by FIDO2 is AES-wrapped on the first NDEF SELECT; the signed payload is built on the first E104 data read. See [applets/ndef/README.md](../applets/ndef/README.md).
 
 ## Install parameters (FIDO2 applet)
 

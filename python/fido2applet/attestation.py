@@ -240,7 +240,7 @@ def main_cli(argv: Optional[list[str]] = None) -> int:
         return 1
 
     if result.ca_private_key_der is not None:
-        print(f"Generated CA private key: {base64.b64encode(result.ca_private_key_der).decode()}")
+        print("Generated new CA private key (not printed; save via provision state if needed)")
     if result.ca_cert_der is not None:
         print(f"Generated CA cert: {base64.b64encode(result.ca_cert_der).decode()}")
 

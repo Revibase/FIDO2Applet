@@ -208,6 +208,16 @@ class NdefSignedUrlTestCase(NdefTestCase):
 
         self.assertEqual(uri_before, uri_after)
 
+    def test_min_counter_rejects_stale(self):
+        self.basic_makecred_params["options"] = {"rk": True}
+        self.ctap2.make_credential(**self.basic_makecred_params)
+
+        uri = self.read_ndef_uri()
+        counter = int(parse_query_param(uri, "c"))
+        verify_signed_ndef_uri(uri, self.BASE_URL, min_counter=counter)
+        with self.assertRaises(ValueError):
+            verify_signed_ndef_uri(uri, self.BASE_URL, min_counter=counter + 1)
+
 
 class NdefGpInstallTestCase(NdefTestCase):
     def setUp(self, install_params: Optional[bytes | tuple[bytes, Optional[bytes]]] = None) -> None:
