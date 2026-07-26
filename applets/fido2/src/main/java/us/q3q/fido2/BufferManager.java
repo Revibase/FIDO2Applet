@@ -3,17 +3,27 @@ package us.q3q.fido2;
 import javacard.framework.*;
 
 /**
- * A class for managing the awkwardness of preferring RAM to flash on very resource-constrained devices.
+ * A stack allocator that prefers scarce RAM over flash on resource-constrained cards.
  *
- * Will allocate space from, in descending order of priority:
- * - The upper reaches of the APDU buffer, beyond the incoming request length
- * - The lower bounds of the APDU buffer, behind the current read index
- * - A TRANSIENT_DESELECT buffer
- * - Flash storage
+ * <p>{@link #allocate} hands out space from the first region that fits, in descending order
+ * of preference (to minimize EEPROM wear):
+ * <ol>
+ *   <li>Upper APDU buffer — bytes beyond the incoming request length.</li>
+ *   <li>Lower APDU buffer — bytes behind the current read cursor.</li>
+ *   <li>A TRANSIENT_DESELECT RAM buffer ({@link #inMemoryBuffer}).</li>
+ *   <li>Flash ({@link #flashBuffer}) — last resort.</li>
+ * </ol>
  *
- * Allocations return opaque handles that need to be decoded to byte array references and offsets.
- * Memory can only be freed in the reverse order it is acquired - no fragmentation allowed and only a few
- * bytes of management overhead.
+ * <p><b>Handle encoding (why callers get a {@code short}, not an array+offset):</b> so one
+ * value can name a location in any of the four regions, {@link #allocate} returns an opaque
+ * handle that {@link #getBufferForHandle} + {@link #getOffsetForHandle} decode. Flash offsets
+ * are the raw non-negative value; the three RAM/APDU regions use disjoint <em>negative</em>
+ * ranges (lower-APDU {@code [-1,-257]}, upper-APDU {@code [-258,-12287]}, memory-buffer
+ * {@code <= -12288}). The sign and range of the handle therefore identify the backing array.
+ *
+ * <p><b>Discipline:</b> this is a stack — allocations must be released in reverse order (LIFO)
+ * with the same size, so there is no fragmentation and only a few bytes of bookkeeping. Call
+ * {@link #initializeAPDU} once per request before allocating, and {@link #clear} to reset.
  */
 public final class BufferManager {
 

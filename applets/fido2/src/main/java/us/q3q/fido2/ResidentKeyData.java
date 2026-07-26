@@ -43,8 +43,14 @@ public class ResidentKeyData {
         return privateKey.isInitialized();
     }
 
+    /**
+     * Writes the 33-byte credential ID (= compressed SEC-1 public key) to {@code outBuffer}.
+     * {@code publicKey} holds the uncompressed form {@code 0x04 || X(32) || Y(32)}; the
+     * compressed prefix is {@code 0x02} or {@code 0x03} depending on the parity of Y's last
+     * byte, followed by X. This is the credential ID, assertion {@code user.id}, and NDEF pk.
+     */
     public short packCredentialId(byte[] outBuffer, short outOffset) {
-        outBuffer[outOffset] = (byte) (0x02 | (publicKey[64] & 1));
+        outBuffer[outOffset] = (byte) (0x02 | (publicKey[64] & 1)); // 0x02/0x03 by Y parity
         Util.arrayCopyNonAtomic(publicKey, (short) 1, outBuffer, (short) (outOffset + 1), KEY_POINT_LENGTH);
         return CREDENTIAL_ID_LEN;
     }

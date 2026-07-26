@@ -3,12 +3,18 @@ package us.q3q.fido2;
 import javacard.framework.JCSystem;
 
 /**
- * 32-bit always-increasing counter that avoids writing to the same flash location too often.
+ * 32-bit monotonic counter with wear-leveling, so no single flash byte is rewritten too often.
  *
- * <p>Uses 67 bytes of flash so the hottest byte is written 256 times in a row but only
- * takes 1/64 of the overall write load. Every increment is persisted immediately (no RAM
- * batching): lost power mid-operation must not roll the counter backwards. The wear-leveled
- * layout keeps the common case to a single byte write.
+ * <p><b>Layout (67 bytes):</b> {@code firstBytes[0..2]} are the high 24 bits; the low 8 bits
+ * live in one of the 64 {@code lastBytes} slots, selected by {@code firstBytes[2] & 0x3F}.
+ * The packed value is {@code firstBytes[0] firstBytes[1] firstBytes[2] lastBytes[idx]}. A
+ * normal increment only rewrites that one low byte; when it overflows we bump the high bytes
+ * and move to the next slot (resetting it), which advances {@code firstBytes[2]} and so keeps
+ * the packed value strictly increasing. The hottest byte is written 256 times in a row but
+ * carries only 1/64 of the total write load.
+ *
+ * <p>Every increment is persisted immediately in a transaction (no RAM batching): a power
+ * loss mid-operation must never roll the counter backwards.
  */
 public final class SigOpCounter {
     private final byte[] firstBytes;

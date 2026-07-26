@@ -21,51 +21,129 @@ import javacardx.apdu.ExtendedLength;
 
 import org.openjavacard.ndef.stub.NdefKeyStore;
 
+/**
+ * A single-credential P-256 signing appliance that speaks CTAP2/U2F framing.
+ *
+ * <p><b>This is intentionally not a full FIDO2/WebAuthn authenticator.</b> It is a
+ * deliberately reduced signing token. An auditor should read it with the following
+ * security model in mind (see {@code docs/capabilities.md} for the authoritative list):
+ *
+ * <ul>
+ *   <li><b>One credential for the life of the card.</b> The first {@code makeCredential}
+ *       ({@code rk:true} required) creates a single P-256 key; every later
+ *       {@code makeCredential}, {@code getAssertion}, U2F REGISTER/AUTHENTICATE and NDEF
+ *       tap reuses that same key. There is no credential management and no reset.</li>
+ *   <li><b>No user verification.</b> No PIN, no biometrics, no on-card presence test.
+ *       Possession of the card is the entire authorization: anyone who can send APDUs can
+ *       obtain signatures. This is by design.</li>
+ *   <li><b>Credential ID = the 33-byte compressed public key.</b> The assertion
+ *       {@code user.id} and the NDEF {@code pk} are the same value. The request
+ *       {@code user.id}/{@code user.name}/RP ID are accepted but not stored.</li>
+ *   <li><b>RP is not enforced.</b> {@code allowList}/{@code excludeList} are ignored; the
+ *       card signs over whatever RP ID / clientDataHash the host sends.</li>
+ *   <li><b>Attestation:</b> {@code packed} self-attestation by default; switchable to basic
+ *       ({@code x5c}) via vendor command {@code 0x46}, gated by install param {@code 0x00}
+ *       and only while the signature counter is still zero (before any signing).</li>
+ *   <li><b>NDEF companion:</b> during {@code makeCredential} the key is pushed once to the
+ *       NDEF applet over a firewall-crossing Shareable ({@link NdefKeyStore}) so it can
+ *       serve a signed URL over NFC. See {@link #pushKeyToNdefApplet}.</li>
+ * </ul>
+ *
+ * <p><b>Memory discipline (recurring pattern throughout):</b> secrets are held in JavaCard
+ * key objects or in transient (RAM) scratch obtained from {@link BufferManager}; the
+ * working signing key is a transient copy cleared after every use
+ * ({@code ecKeyPair.getPrivate().clearKey()}), and scratch holding a private scalar is
+ * zero-filled in a {@code finally} block. Persistent state changes (key creation, counter
+ * bumps, attestation load) are wrapped in {@link JCSystem} transactions for tear safety.
+ *
+ * <p><b>Transport:</b> CTAP CBOR over APDU ({@code CLA 0x80}, {@code INS 0x10}) with
+ * extended-APDU support for the large commands; raw U2F uses {@code CLA 0x00}. The APDU
+ * entry point is {@link #process(APDU)}.
+ */
 public final class FIDO2Applet extends Applet implements ExtendedLength {
 
+    /** Reported in getInfo; bump when the wire behavior changes. */
     private static final byte FIRMWARE_VERSION = 0x09;
 
-    private boolean attestationSwitchingEnabled;
-    /**
-     * Scratch for extracting the private scalar before pushing to NdefApplet
-     * (CLEAR_ON_DESELECT). Layout: priv(32) + compressedPub(33).
-     */
-    private byte[] ndefPushScratch;
+    // ---- Fixed sizes (P-256 / CTAP wire constants) ----------------------------------
+
+    /** Length of one EC coordinate / the private scalar, in bytes. */
+    private static final short KEY_POINT_LENGTH = 32;
+    /** External FIDO credential ID length (= compressed secp256r1 public key: 0x02/03 || X). */
+    private static final short CREDENTIAL_ID_LEN = 33;
+    /** Uncompressed SEC1 public key length (0x04 || X || Y). */
+    private static final short PUB_KEY_LENGTH = (short) (2 * KEY_POINT_LENGTH + 1);
+    /** SHA-256 output length, used for both the RP-ID hash and the clientDataHash. */
+    private static final short RP_HASH_LEN = 32;
+    private static final short CLIENT_DATA_HASH_LEN = 32;
+    /** Largest request {@code user.id} we accept (it is validated then discarded). */
+    private static final short MAX_USER_ID_LENGTH = 64;
+
+    // ---- NDEF companion wiring -------------------------------------------------------
+
+    /** AID of the NDEF applet we push the credential key to during makeCredential. */
     private static final byte[] NDEF_CLIENT_AID = {
             (byte) 0xD2, (byte) 0x76, 0x00, 0x00, (byte) 0x85, 0x01, 0x01
     };
-    private static final short KEY_POINT_LENGTH = 32;
-    /** External FIDO credential ID length (= compressed secp256r1 public key). */
-    private static final short CREDENTIAL_ID_LEN = 33;
     private static final short NDEF_PUSH_SCRATCH_SIZE =
             (short) (KEY_POINT_LENGTH + CREDENTIAL_ID_LEN);
+    /**
+     * Transient (CLEAR_ON_DESELECT) scratch for extracting the private scalar before
+     * pushing it to NdefApplet. Layout: priv(32) || compressedPub(33). Zeroed after use.
+     */
+    private byte[] ndefPushScratch;
+    /** True after the one-time key push to NdefApplet succeeded (persistent). */
+    private boolean ndefKeyPushed;
 
+    // ---- Install-time configuration (see the install() parameter parser) -------------
+
+    /** Whether vendor command 0x46 may load a basic-attestation cert (install param 0x00). */
+    private boolean attestationSwitchingEnabled;
     private short MAX_RAM_SCRATCH_SIZE;
     private short BUFFER_MEM_SIZE;
     private short FLASH_SCRATCH_SIZE;
-    private static final short MAX_USER_ID_LENGTH = 64;
-    private static final short RP_HASH_LEN = 32;
-    private static final short PUB_KEY_LENGTH = (short) (2 * KEY_POINT_LENGTH + 1);
-    private static final short CLIENT_DATA_HASH_LEN = 32;
-    private byte[] bufferMem;
-    private final RandomData random;
-    private final SigOpCounter counter;
-    private KeyPair ecKeyPair;
-    private ECPrivateKey attestationKey;
-    private byte[] attestationData;
-    private short filledAttestationData;
-    private final MessageDigest sha256;
-    private final TransientStorage transientStorage;
-    private BufferManager bufferManager;
+
+    // ---- The single resident credential ----------------------------------------------
+
+    /** One-element array holding the sole resident credential (or empty). */
     private ResidentKeyData[] residentKeys;
+    /** 0 until the credential is created, then 1 for the life of the card. */
     private short numResidentCredentials;
-    /** True after a successful one-time key push to NdefApplet. */
-    private boolean ndefKeyPushed;
+    /**
+     * Working keypair used only as a transient home for the resident scalar during
+     * signing (and for fresh key generation). Never the durable copy of the credential:
+     * the persistent key lives in {@code residentKeys[0]}. Cleared after every use.
+     */
+    private KeyPair ecKeyPair;
+
+    // ---- Attestation ------------------------------------------------------------------
+
+    /** Basic-attestation private key, or null for self-attestation (the default). */
+    private ECPrivateKey attestationKey;
+    /** CBOR-encoded x5c certificate chain, streamed in via command 0x46; null if unset. */
+    private byte[] attestationData;
+    /** Bytes of {@link #attestationData} received so far (chain load is incremental). */
+    private short filledAttestationData;
+    /** Authenticator AAGUID; all-zero for self-attestation, set when a cert is loaded. */
     private final byte[] aaguid = {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
     };
+
+    // ---- Shared services and scratch (created once at install) -----------------------
+
+    private final RandomData random;
+    private final MessageDigest sha256;
+    /** ECDSA-SHA256 signer, re-initialised per operation with the relevant key. */
     private final Signature attester;
+    /** Monotonic, wear-leveled 32-bit signature counter (persistent). */
+    private final SigOpCounter counter;
+    /** Compact in-RAM request/response state (options, chaining offsets, continuation). */
+    private final TransientStorage transientStorage;
+    /** RAM-first scratch allocator used for all per-request working buffers. */
+    private BufferManager bufferManager;
+    /** Main request/response staging buffer (RAM if it fits, else flash). */
+    private byte[] bufferMem;
 
     private static boolean isExtendedApdu(APDU apdu) {
         return apdu.getOffsetCdata() == ISO7816.OFFSET_EXT_CDATA;
@@ -92,6 +170,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         sendBuffer(apdu, len);
     }
 
+    /**
+     * Emits a single CTAP error byte as the response body with SW 0x9000 (CTAP carries its
+     * status in the payload, not the status word) and unwinds the current command. Also
+     * clears scratch and the working key. Never returns normally.
+     */
     private void sendErrorByte(APDU apdu, byte sendByte) {
         transientStorage.clearOutgoingContinuation();
         bufferManager.clear();
@@ -101,6 +184,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         throwException(ISO7816.SW_NO_ERROR);
     }
 
+    /**
+     * Reads the full request body of length {@code lc} into a single contiguous buffer and
+     * returns it. Small non-chained requests stay in the APDU buffer; larger or chained
+     * requests are assembled into {@link #bufferMem} at the current chaining offset.
+     * Over-long input is rejected with {@code REQUEST_TOO_LARGE}; a length mismatch with
+     * {@code SW_WRONG_LENGTH}.
+     */
     private byte[] fullyReadReq(APDU apdu, short lc, short amtRead, boolean forceBuffering) {
         byte[] buffer = apdu.getBuffer();
         final short chainOff = transientStorage.getChainIncomingReadOffset();
@@ -122,6 +212,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             transientStorage.resetChainIncomingReadOffset();
             return buffer;
         }
+        // The write cursor is offset by chainOff (accumulated chained input), so the
+        // capacity checks must account for it or a near-full buffer overruns bufferMem.
+        if ((short) (chainOff + amtRead) > (short) bufferMem.length) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_REQUEST_TOO_LARGE);
+        }
         Util.arrayCopyNonAtomic(buffer, apdu.getOffsetCdata(), bufferMem, chainOff, amtRead);
         short curRead = amtRead;
         while (curRead < lc) {
@@ -129,7 +224,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             if (read == 0) {
                 throwException(ISO7816.SW_WRONG_LENGTH);
             }
-            if (curRead > (short) (bufferMem.length - read)) {
+            if ((short) (curRead + chainOff) > (short) (bufferMem.length - read)) {
                 sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_REQUEST_TOO_LARGE);
             }
             Util.arrayCopyNonAtomic(buffer, (short) 0, bufferMem, (short) (curRead + chainOff), read);
@@ -151,6 +246,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return attestationData != null && filledAttestationData >= attestationData.length;
     }
 
+    /**
+     * Parses the {@code options} map, recording {@code rk}/{@code up} into
+     * {@link TransientStorage} and rejecting unsupported combinations: {@code uv:true} →
+     * {@code UNSUPPORTED_OPTION}; for makeCredential ({@code requireRK}) {@code up:false} →
+     * {@code INVALID_OPTION} and a missing {@code rk} → {@code INVALID_OPTION}. Unknown
+     * option keys are skipped.
+     */
     private short processOptionsMap(APDU apdu, byte[] buffer, short readIdx, short lc, boolean requireRK) {
         short numOptions = getMapEntryCount(apdu, buffer[readIdx++]);
         if (readIdx >= lc) {
@@ -304,6 +406,20 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         ISOException.throwIt(swCode);
     }
 
+    // =====================================================================================
+    // Response output and ISO chaining
+    //
+    // A CTAP response lives in bufferMem (optionally followed by a streamed x5c chain). If
+    // it fits the expected Le it is sent in one shot; otherwise it is delivered in chunks,
+    // either as native extended-APDU blocks or via ISO GET RESPONSE (0x61XX status words),
+    // with the continuation position tracked in transientStorage.
+    // =====================================================================================
+
+    /**
+     * Sends an assembled CTAP response of {@code outputLen} bytes from {@link #bufferMem},
+     * appending the attestation {@code x5c} chain if one was deferred. Sets up response
+     * chaining when the payload exceeds what one transfer can carry.
+     */
     private void doSendResponse(APDU apdu, short outputLen) {
         bufferManager.clear();
         final boolean x5c = transientStorage.shouldStreamX5CLater();
@@ -458,6 +574,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         bufferMem = getTempOrFlashByteBuffer(BUFFER_MEM_SIZE, requestBufferInRam);
     }
 
+    /**
+     * Handles CTAP {@code authenticatorGetInfo} (0x04). Emits a fixed 7-entry map:
+     * versions ({@code FIDO_2_0}, plus {@code U2F_V2} once attestation is provisioned),
+     * AAGUID, options ({@code rk:true, up:true}), maxMsgSize, maxCredentialIdLength (33),
+     * the ES256 algorithm, and the firmware version. Options deliberately omit {@code uv}
+     * and {@code clientPin} so platforms do not attempt UV/PIN setup this token cannot do.
+     */
     private void sendAuthInfo(APDU apdu) {
         byte[] buffer = apdu.getBuffer();
         short offset = 0;
@@ -492,35 +615,45 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
 
     /**
      * Pushes the credential private key and compressed public key to NdefApplet
-     * via {@link NdefKeyStore}. Runs at most once; later calls are no-ops.
-     * After a successful push, NDEF encrypts on SELECT and signs on E104 without
-     * calling back into FIDO2.
+     * via {@link NdefKeyStore}. Normally pushes once and returns early thereafter, but
+     * re-pushes if NDEF reports (via {@code isKeyReady()}) that it is no longer holding
+     * the key — e.g. a reset wiped NDEF's uncommitted CLEAR_ON_RESET staging in the window
+     * before it encrypts on SELECT. This keeps the persistent {@code ndefKeyPushed} flag
+     * from permanently masking a lost key (the I1 fix).
      *
      * @return true if the key is (or was already) available to NDEF; false if NDEF
-     *         is unavailable or the first push failed
+     *         is unavailable or the push failed
      */
     private boolean pushKeyToNdefApplet(APDU apdu) {
-        if (ndefKeyPushed) {
-            return true;
-        }
         if (!hasUsableResidentKey()) {
             return false;
+        }
+        AID ndefAid = JCSystem.lookupAID(NDEF_CLIENT_AID, (short) 0,
+                (byte) NDEF_CLIENT_AID.length);
+        if (ndefAid == null) {
+            // No NDEF applet present. If a prior push succeeded, treat as done; else fail.
+            return ndefKeyPushed;
+        }
+        Shareable s = JCSystem.getAppletShareableInterfaceObject(
+                ndefAid, NdefKeyStore.SERVICE_ID);
+        if (!(s instanceof NdefKeyStore)) {
+            return ndefKeyPushed;
+        }
+        NdefKeyStore ks = (NdefKeyStore) s;
+        if (ndefKeyPushed) {
+            // Confirm NDEF still holds the key; if a reset wiped uncommitted staging,
+            // fall through and re-push so the NDEF channel is recoverable.
+            try {
+                if (ks.isKeyReady()) {
+                    return true;
+                }
+            } catch (Exception e) {
+                return true;
+            }
         }
         try {
             residentKeys[0].getPrivateKey().getS(ndefPushScratch, (short) 0);
             residentKeys[0].packCredentialId(ndefPushScratch, KEY_POINT_LENGTH);
-
-            AID ndefAid = JCSystem.lookupAID(NDEF_CLIENT_AID, (short) 0,
-                    (byte) NDEF_CLIENT_AID.length);
-            if (ndefAid == null) {
-                return false;
-            }
-            Shareable s = JCSystem.getAppletShareableInterfaceObject(
-                    ndefAid, NdefKeyStore.SERVICE_ID);
-            if (!(s instanceof NdefKeyStore)) {
-                return false;
-            }
-            NdefKeyStore ks = (NdefKeyStore) s;
 
             for (short i = 0; i < KEY_POINT_LENGTH; i++) {
                 ks.setPrivKeyByte(i, ndefPushScratch[i]);
@@ -538,7 +671,34 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
     }
 
+    // =====================================================================================
+    // CTAP commands: makeCredential, getAssertion, getInfo
+    // =====================================================================================
+
+    /**
+     * Handles CTAP {@code authenticatorMakeCredential} (0x01).
+     *
+     * <p>The request is a CBOR map whose integer keys MUST appear in ascending order
+     * (canonical CTAP encoding); the parser walks them positionally:
+     * <pre>
+     *   0x01 clientDataHash   byte string, 32 bytes
+     *   0x02 rp               map, {@code id} used for the RP-ID hash (rest ignored)
+     *   0x03 user             map, {@code id} length-checked then discarded
+     *   0x04 pubKeyCredParams array, MUST offer ES256 (alg -7); others ignored
+     *   0x07 options          only {rk:true (required), up:true} accepted
+     *   0x08 pinUvAuthParam   always rejected (no clientPin) — see rejectPinUvAuthParam
+     * </pre>
+     *
+     * <p>Behavior: on the first call it generates the sole resident P-256 key; every later
+     * call reuses it and returns a fresh attestation over the same key (credential ID = the
+     * compressed public key). Emits a {@code packed} attestation object, then pushes the key
+     * to the NDEF applet once. {@code buffer[0]} is the command byte, so parsing starts at 1.
+     *
+     * @param lc     total request length including the command byte
+     * @param buffer request buffer ({@link #bufferMem} or the APDU buffer)
+     */
     private void makeCredential(APDU apdu, short lc, byte[] buffer) {
+        // ---- Parse the four mandatory ordered map keys (0x01..0x04) ----
         short readIdx = 1;
         if (lc == 0) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
@@ -572,7 +732,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
         }
         readIdx = readUserMap(apdu, buffer, readIdx, lc);
-        final byte userIdLen = transientStorage.getStoredLen();
+        // getStoredLen() is a signed byte; compare unsigned so user.id lengths 128-255
+        // are still rejected (a signed comparison would treat them as negative).
+        final short userIdLen = ub(transientStorage.getStoredLen());
         if (userIdLen > MAX_USER_ID_LENGTH) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_REQUEST_TOO_LARGE);
         }
@@ -609,9 +771,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             readIdx = skipCborValue(apdu, buffer, readIdx, lc);
         }
+        // rk:true is mandatory for this appliance (only resident credentials exist).
         if (!transientStorage.hasRKOption()) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_OPTION);
         }
+
+        // ---- Allocate working scratch, then create the key (first call) or reuse it ----
         final short scratchRPIDHashHandle = bufferManager.allocate(apdu, RP_HASH_LEN, BufferManager.ANYWHERE);
         final short scratchRPIDHashOffset = bufferManager.getOffsetForHandle(scratchRPIDHashHandle);
         final byte[] scratchRPIDHashBuffer = bufferManager.getBufferForHandle(apdu, scratchRPIDHashHandle);
@@ -660,14 +825,15 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 }
             }
         }
+        // ---- Build the attestation object into bufferMem, sign authData||clientDataHash ----
         final short clientDataHashHandle = bufferManager.allocate(apdu, CLIENT_DATA_HASH_LEN, BufferManager.ANYWHERE);
         final short clientDataHashScratchOffset = bufferManager.getOffsetForHandle(clientDataHashHandle);
         final byte[] clientDataHashBuffer = bufferManager.getBufferForHandle(apdu, clientDataHashHandle);
         Util.arrayCopyNonAtomic(buffer, clientDataHashIdx, clientDataHashBuffer, clientDataHashScratchOffset,
                 CLIENT_DATA_HASH_LEN);
         short outputLen = 0;
-        bufferMem[outputLen++] = 0x00;
-        bufferMem[outputLen++] = (byte) 0xA3;
+        bufferMem[outputLen++] = 0x00;        // CTAP status OK
+        bufferMem[outputLen++] = (byte) 0xA3; // CBOR map: 3 entries (fmt, authData, attStmt)
         outputLen = Util.arrayCopyNonAtomic(CannedCBOR.MAKE_CREDENTIAL_RESPONSE_PREAMBLE, (short) 0,
                 bufferMem, outputLen, (short) CannedCBOR.MAKE_CREDENTIAL_RESPONSE_PREAMBLE.length);
         byte flags = 0x41; // AT (attested credential data) + UP (user present)
@@ -715,13 +881,28 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 transientStorage.setStreamX5CLater(true);
             }
         }
-        // One-time NDEF key push; later makeCredential calls are no-ops inside the pusher.
+        // One-time NDEF key push (re-pushes only if NDEF lost the key to a reset).
         if (!pushKeyToNdefApplet(apdu)) {
             sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_OTHER);
         }
         doSendResponse(apdu, outputLen);
     }
 
+    /**
+     * Handles CTAP {@code authenticatorGetAssertion} (0x02).
+     *
+     * <p>Request CBOR map (ascending integer keys):
+     * <pre>
+     *   0x01 rpId             text string (only used to compute the RP-ID hash)
+     *   0x02 clientDataHash   byte string, 32 bytes
+     *   0x05 options          {up} honored; {uv:true} rejected
+     *   0x06 pinUvAuthParam   always rejected
+     * </pre>
+     * {@code allowList} (0x03) is intentionally ignored: there is one credential, so the
+     * resident key is always used if present ({@code NO_CREDENTIALS} otherwise). Signs
+     * {@code authData || clientDataHash} and returns the credential, authData, signature,
+     * and {@code user.id} (= the compressed public key).
+     */
     private void getAssertion(final APDU apdu, final short lc, final byte[] buffer) {
         short readIdx = 1;
         final short scratchRPIDHashHandle = bufferManager.allocate(apdu, RP_HASH_LEN, BufferManager.NOT_APDU_BUFFER);
@@ -750,7 +931,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         short rpIdLen;
         if (buffer[readIdx] == 0x78) {
             readIdx++;
-            rpIdLen = buffer[readIdx++];
+            // One-byte length: read unsigned so 128-255 is not misread as negative.
+            rpIdLen = ub(buffer[readIdx++]);
         } else if (buffer[readIdx] >= 0x61 && buffer[readIdx] < 0x78) {
             rpIdLen = (short) (buffer[readIdx] - 0x60);
             readIdx++;
@@ -760,6 +942,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         final short rpIdIdx = readIdx;
         readIdx += rpIdLen;
+        // The RP ID must leave room for the mandatory clientDataHash key that follows;
+        // reject a length that runs past the request rather than dereferencing OOB.
+        if (readIdx >= lc) {
+            sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
+        }
         if (buffer[readIdx++] != 0x02) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_MISSING_PARAMETER);
         }
@@ -896,6 +1083,16 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return (short) (readIdx + 1);
     }
 
+    // =====================================================================================
+    // CBOR request parsing helpers (all operate on the raw request buffer + a read cursor)
+    // =====================================================================================
+
+    /**
+     * Advances past one CBOR value at {@code readIdx}, recursing into arrays/maps, and
+     * returns the index just after it. Only the CBOR major types this applet can receive
+     * are handled; anything else is a {@code CBOR_UNEXPECTED_TYPE} error. Every recursion
+     * re-checks bounds against {@code lc}, so truncated input fails as a clean error.
+     */
     private short skipCborValue(APDU apdu, byte[] buffer, short readIdx, short lc) {
         if (readIdx >= lc || readIdx < 0) {
             sendErrorByte(apdu, FIDOConstants.CTAP2_ERR_INVALID_CBOR);
@@ -972,6 +1169,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return readIdx;
     }
 
+    /**
+     * Parses the {@code rp} map, locating its {@code id} text string. The (offset, length)
+     * of that id is stashed in {@link TransientStorage} for the caller to hash; other rp
+     * fields are skipped. Errors {@code MISSING_PARAMETER} if no {@code id} is present.
+     */
     private short readRpIdMap(APDU apdu, byte[] buffer, short readIdx, short lc) {
         transientStorage.readyStoredVars();
         short mapDef = ub(buffer[readIdx++]);
@@ -1027,6 +1229,11 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return readIdx;
     }
 
+    /**
+     * Parses the {@code user} map, locating its {@code id} byte string and stashing its
+     * (offset, length) in {@link TransientStorage}. The value is only length-validated by
+     * the caller and then discarded (assertion {@code user.id} is the public key, not this).
+     */
     private short readUserMap(APDU apdu, byte[] buffer, short readIdx, short lc) {
         transientStorage.readyStoredVars();
         short mapDef = ub(buffer[readIdx++]);
@@ -1209,6 +1416,17 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     }
 
     /**
+     * Guards a read of {@code need} bytes starting at {@code offset} against the end of
+     * the install parameter buffer. Prevents over-reads past the supplied application data
+     * during installation.
+     */
+    private static void requireInstallBytes(short offset, short need, short endOffset) {
+        if ((short) (offset + need) > endOffset) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        }
+    }
+
+    /**
      * Sets in-memory variables capturing possible incoming CTAP options to their
      * default values
      */
@@ -1365,6 +1583,16 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         return new byte[len];
     }
 
+    // =====================================================================================
+    // Attestation certificate loading (vendor command 0x46)
+    //
+    // Switches from self-attestation to basic (x5c) attestation. Gated by install param
+    // 0x00 AND only while the signature counter is zero (before any signing), so the
+    // attestation identity cannot be changed after the card is in use. The chain arrives
+    // over one or more (chained) APDUs: Start parses the header + optional private key,
+    // Continue appends the remaining certificate bytes.
+    // =====================================================================================
+
     /**
      * Initialize non-self attestation mode.
      *
@@ -1520,7 +1748,23 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     }
 
     @Override
+    /**
+     * Single APDU entry point. Dispatch precedence (first match wins):
+     * <ol>
+     *   <li>Applet SELECT (JCRE selection, or an explicit {@code 00 A4 04 00}).</li>
+     *   <li>GET RESPONSE ({@code *C0}): emit the next chunk of a chained response.</li>
+     *   <li>Continuation of an in-progress command-chained request (attestation load,
+     *       or a generic chained CTAP body being accumulated in {@link #bufferMem}).</li>
+     *   <li>Raw U2F ({@code CLA 0x00}): REGISTER (0x01), AUTHENTICATE (0x02), VERSION (0x03).</li>
+     *   <li>CTAP ({@code CLA 0x80}, {@code INS 0x10}): dispatch on the first body byte to
+     *       makeCredential / getAssertion / getInfo / install-certs.</li>
+     * </ol>
+     * Anything else falls through to a CLA/INS/P1P2 error. Uncaught runtime exceptions
+     * become a non-0x9000 status word (the JavaCard VM bounds-checks all array access, so
+     * malformed input degrades to a status word, never memory corruption).
+     */
     public void process(APDU apdu) throws ISOException {
+        // (1) Selection.
         if (selectingApplet()) {
             handleAppletSelect(apdu);
             return;
@@ -1532,12 +1776,15 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             handleAppletSelect(apdu);
             return;
         }
+        // (2) GET RESPONSE: continue streaming a long response. Any other command ends
+        //     an outstanding response continuation.
         if (cla_ins == 0x00C0 || cla_ins == (short) 0x80C0) {
             streamOutgoingContinuation(apdu, apduBytes, true);
             return;
         } else {
             transientStorage.clearOutgoingContinuation();
         }
+        // (3a) Continuation of a chained attestation-certificate load already in progress.
         if (attestationData != null && filledAttestationData < attestationData.length &&
                 transientStorage.getChainIncomingReadOffset() > 0 &&
                 bufferMem[0] == FIDOConstants.CMD_INSTALL_CERTS) {
@@ -1554,6 +1801,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             }
             return;
         } else if (apdu.isCommandChainingCLA()) {
+            // (3b) First/next packet of a command-chained request. Accumulate into bufferMem;
+            //      the first attestation-load packet starts the load, others just advance the
+            //      chaining offset until the terminating (non-chaining) packet arrives.
             final short amtRead = apdu.setIncomingAndReceive();
             final short lc = apdu.getIncomingLength();
             if (lc == 0) {
@@ -1580,6 +1830,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             return;
         }
 
+        // (4) Raw U2F (ISO 7816 status words, not CTAP error bytes).
         if (cla_ins == 0x0001) {
             transientStorage.clearOutgoingContinuation();
             u2FRegister(apdu);
@@ -1606,6 +1857,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
             return;
         }
 
+        // (5) CTAP over APDU. Require CLA 0x80 / INS 0x10 / P1 in {0x00,0x80} / P2 0x00.
         if (apduBytes[ISO7816.OFFSET_CLA] != (byte) 0x80) {
             throwException(ISO7816.SW_CLA_NOT_SUPPORTED);
         }
@@ -1621,6 +1873,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         if (amtRead == 0) {
             throwException(ISO7816.SW_DATA_INVALID);
         }
+        // The CTAP command is the first body byte. lcEffective is the total body length
+        // including any already-buffered chained prefix (+1 accounts for that command byte).
         short lcEffective = (short) (lc + 1);
         byte cmdByte = apduBytes[apdu.getOffsetCdata()];
         transientStorage.clearOutgoingContinuation();
@@ -1666,14 +1920,21 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         transientStorage.resetChainIncomingReadOffset();
     }
 
+    /** Called by the JCRE when the applet is deselected; clears all transient state. */
     public void deselect() {
         transientStorage.clearOnDeselect();
     }
 
+    // =====================================================================================
+    // Raw U2F (CTAP1) — available only after an attestation certificate is provisioned.
+    // Key handle and AppID are intentionally NOT bound to the credential (single-key model);
+    // errors are ISO 7816 status words, not CTAP bytes. See docs/capabilities.md.
+    // =====================================================================================
+
     /**
-     * U2F REGISTER: returns a standards-shaped registration response for the
-     * existing resident key (created via CTAP2 makeCredential). Does not create
-     * a new key or push to NDEF again.
+     * U2F REGISTER: returns a standards-shaped registration response for the existing
+     * resident key (created via CTAP2 makeCredential). Does not create a new key or push
+     * to NDEF again. Requires a provisioned attestation cert and an existing resident key.
      */
     private void u2FRegister(APDU apdu) {
         if (!isU2fProvisioned()) {
@@ -1686,7 +1947,8 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         short attCertLen = 0;
         short attCertStart = 2;
         final byte cborAttLenByte = attestationData[1];
-        if (cborAttLenByte < 0x57 && cborAttLenByte >= 0x40) {
+        if (cborAttLenByte <= 0x57 && cborAttLenByte >= 0x40) {
+            // CBOR byte string 0x40..0x57 = inline length 0..23 (0x57 must be included).
             attCertLen = (short) (cborAttLenByte - 0x40);
         } else if (cborAttLenByte == 0x58) {
             attCertLen = ub(attestationData[attCertStart++]);
@@ -1834,6 +2096,14 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         sendNoCopy(apdu, (short) (sigLen + 5));
     }
 
+    // =====================================================================================
+    // Applet lifecycle: install and selection
+    // =====================================================================================
+
+    /**
+     * JCRE install entry point. Strips the AID/control-info framing to locate the
+     * application-data block, then constructs and registers the applet.
+     */
     public static void install(byte[] array, short offset, byte length) throws ISOException {
         if (length > 0) {
             short aidLen = ub(array[offset]);
@@ -1845,6 +2115,17 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         applet.register();
     }
 
+    /**
+     * Constructs the applet, applying install parameters. The parameter blob is a small
+     * CBOR-style map with integer keys (all optional):
+     * <pre>
+     *   0x00 attestationSwitchingEnabled (bool)   0x09 max RAM scratch
+     *   0x0A buffer_mem / maxMsgSize              0x0B flash scratch
+     *   0x0F fixed 32-byte attestation private key
+     * </pre>
+     * Each field read is bounds-checked against the blob (see {@link #requireInstallBytes}).
+     * Defaults favor RAM to minimize EEPROM wear.
+     */
     private FIDO2Applet(byte[] array, short offset, byte length) {
         attestationSwitchingEnabled = false;
         // Defaults favor RAM-first operation; flash fallback (bufferMem / flashBuffer)
@@ -1855,6 +2136,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         BUFFER_MEM_SIZE = 2048;
         FLASH_SCRATCH_SIZE = 1024;
         final short initOffset = offset;
+        final short endOffset = (short) (initOffset + length);
         if (length > 0) {
             short sb = ub(array[offset++]);
             short numOptions = (short) (sb - 0xA0);
@@ -1864,13 +2146,17 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 }
                 switch (array[offset++]) {
                     case 0x00:
+                        requireInstallBytes(offset, (short) 1, endOffset);
                         attestationSwitchingEnabled = array[offset++] == (byte) 0xF5;
                         break;
                     case 0x09:
+                        requireInstallBytes(offset, (short) 1, endOffset);
                         if (array[offset] == 0x18) {
+                            requireInstallBytes(offset, (short) 2, endOffset);
                             offset++;
                             MAX_RAM_SCRATCH_SIZE = ub(array[offset++]);
                         } else if (array[offset] == 0x19) {
+                            requireInstallBytes(offset, (short) 3, endOffset);
                             offset += 3;
                             MAX_RAM_SCRATCH_SIZE = Util.getShort(array, (short) (offset - 2));
                         } else {
@@ -1878,6 +2164,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         }
                         break;
                     case 0x0A:
+                        requireInstallBytes(offset, (short) 3, endOffset);
                         if (array[offset++] != 0x19) {
                             ISOException.throwIt(ISO7816.SW_DATA_INVALID);
                         }
@@ -1885,10 +2172,13 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         offset += 2;
                         break;
                     case 0x0B:
+                        requireInstallBytes(offset, (short) 1, endOffset);
                         if (array[offset] == 0x18) {
+                            requireInstallBytes(offset, (short) 2, endOffset);
                             offset++;
                             FLASH_SCRATCH_SIZE = ub(array[offset++]);
                         } else if (array[offset] == 0x19) {
+                            requireInstallBytes(offset, (short) 3, endOffset);
                             offset++;
                             FLASH_SCRATCH_SIZE = Util.getShort(array, offset);
                             offset += 2;
@@ -1899,6 +2189,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                         }
                         break;
                     case 0x0F:
+                        requireInstallBytes(offset, (short) (2 + KEY_POINT_LENGTH), endOffset);
                         if (array[offset++] != 0x58 || array[offset++] != 0x20) {
                             ISOException.throwIt(ISO7816.SW_DATA_INVALID);
                         }

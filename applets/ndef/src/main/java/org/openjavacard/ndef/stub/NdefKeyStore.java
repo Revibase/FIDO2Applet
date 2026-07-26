@@ -41,4 +41,12 @@ public interface NdefKeyStore extends Shareable {
      * Encryption into EEPROM happens on the first NDEF SELECT.
      */
     void commit();
+
+    /**
+     * Reports whether NDEF is currently holding a key: either committed to EEPROM
+     * or staged and guaranteed to commit on the next NDEF SELECT. Returns false if
+     * nothing is held — e.g. a reset wiped uncommitted staging before encryption ran,
+     * in which case the caller should push the key again.
+     */
+    boolean isKeyReady();
 }

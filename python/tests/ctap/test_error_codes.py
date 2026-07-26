@@ -58,6 +58,24 @@ class CTAPErrorCodeTestCase(CTAPTestCase):
             self.ctap2.make_credential(**params)
         self.assertEqual(CtapError.ERR.REQUEST_TOO_LARGE, ctx.exception.code)
 
+    def test_request_too_large_user_id_over_127(self):
+        # Regression (audit I2): a user.id of 128-255 bytes must still be rejected.
+        # The stored length was read as a signed byte, so 128-255 looked negative and
+        # slipped past the ">64" check.
+        params = copy.copy(self.basic_makecred_params)
+        params["user"] = {"id": secrets.token_bytes(200), "name": "toolong"}
+        with self.assertRaises(CtapError) as ctx:
+            self.ctap2.make_credential(**params)
+        self.assertEqual(CtapError.ERR.REQUEST_TOO_LARGE, ctx.exception.code)
+
+    def test_get_assertion_oversized_rp_id_length_clean_error(self):
+        # Regression (audit I3): a getAssertion RP ID whose one-byte length has the high
+        # bit set (>= 0x80) must yield a clean CTAP error rather than an out-of-bounds
+        # status word from a negative-length dereference.
+        body = bytes([0x02, 0xA2, 0x01, 0x78, 0x80, 0x62])
+        res = self.ctap2.device.call(0x10, body)
+        self.assertEqual(CtapError.ERR.INVALID_CBOR, res[0])
+
     def test_no_credentials_get_assertion(self):
         with self.assertRaises(CtapError) as ctx:
             self.ctap2.get_assertion(

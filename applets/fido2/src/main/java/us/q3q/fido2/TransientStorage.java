@@ -4,7 +4,20 @@ import javacard.framework.JCSystem;
 import javacard.framework.Util;
 
 /**
- * Provides in-memory state in a maximally compact way
+ * Per-session request/response state, held in one small CLEAR_ON_DESELECT byte array so it
+ * costs almost no RAM and is wiped automatically on deselect.
+ *
+ * <p>Layout of {@code tempBytes} ({@value #NUM_RESET_BYTES} bytes):
+ * <pre>
+ *   [0..1] stored index    scratch (offset into the request buffer) — {@code setStoredVars}
+ *   [2]    stored length   scratch (paired with the index)
+ *   [3..4] outgoing response continuation: write offset
+ *   [5..6] outgoing response continuation: bytes remaining
+ *   [7..8] incoming command-chaining read offset
+ *   [9]    boolean omnibus: bit flags packed into one byte (see BOOL_IDX_* and 0x02 = x5c)
+ * </pre>
+ * The {@code stored index/length} pair is reused as a general "return two values from a
+ * parser" channel (e.g. the located rp/user {@code id}). Everything here is transient.
  */
 public final class TransientStorage {
     private final byte[] tempBytes;

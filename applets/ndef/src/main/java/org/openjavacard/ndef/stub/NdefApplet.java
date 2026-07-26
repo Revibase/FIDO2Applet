@@ -394,6 +394,15 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         pendingPushReady[0] = 1;
     }
 
+    /**
+     * True when a key is committed to EEPROM, or staged and pending encryption on the
+     * next SELECT. False when nothing is held (e.g. a reset wiped uncommitted staging),
+     * signalling FIDO2 that it should push the key again.
+     */
+    public boolean isKeyReady() {
+        return keyValid[0] != 0 || pendingPushReady[0] != 0;
+    }
+
     // -----------------------------------------------------------------------
     // Key encryption / decryption
     // -----------------------------------------------------------------------
