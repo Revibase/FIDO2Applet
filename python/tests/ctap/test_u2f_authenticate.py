@@ -9,7 +9,7 @@ from cryptography.exceptions import InvalidSignature
 from .ctap_test import BasicAttestationTestCase, CTAPTestCase
 
 FIDO_AID = bytes.fromhex("A0000006472F0001")
-CREDENTIAL_ID_LEN = 64
+CREDENTIAL_ID_LEN = 33
 U2F_INS_REGISTER = 0x01
 U2F_INS_AUTHENTICATE = 0x02
 U2F_INS_VERSION = 0x03

@@ -28,7 +28,7 @@ Applet AIDs: FIDO2 `A0000006472F0001`, NDEF `D2760000850101`.
 
 Advertises `FIDO_2_0` always; adds `U2F_V2` after attestation cert is loaded.
 
-Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`: 64.
+Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`: 33.
 
 ### `makeCredential`
 
@@ -43,7 +43,8 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | Attestation | `packed` self-attestation by default; basic (`x5c`) after cert install |
-| Credential ID | Fixed 64 bytes |
+| Credential ID | Fixed **33 bytes** — compressed secp256r1 public key (`0x02/0x03 \|\| X`); equals NDEF `pk` |
+| Private key storage | Persistent Java Card `ECPrivateKey`; signing uses a transient working key (never the persistent object directly) |
 
 ### `getAssertion`
 
@@ -56,7 +57,7 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | No resident key | `NO_CREDENTIALS` |
-| Corrupted stored key | `INTEGRITY_FAILURE` |
+| Uninitialized / cleared private key | `NO_CREDENTIALS` |
 | Counter | Wear-leveled 32-bit |
 
 ## U2F (`U2F_V2`)
@@ -117,7 +118,6 @@ Internal codes that need fault injection are covered in Java unit tests.
 | `PIN_AUTH_INVALID` (`0x33`) | Non-empty pinUvAuthParam | `test_error_codes.test_pin_auth_invalid` |
 | `PIN_NOT_SET` (`0x35`) | Empty pinUvAuthParam | `test_error_codes.test_pin_not_set` |
 | `REQUEST_TOO_LARGE` (`0x39`) | user.id &gt; 64 | `test_error_codes.test_request_too_large_user_id` |
-| `INTEGRITY_FAILURE` (`0x3D`) | Stored credential MAC bad | `ErrorCodeInjectionTest` (sim runtime reflection) |
 | `OTHER` (`0x7F`) | NDEF push failed (no NDEF applet) | `CTAPErrorCodeNoNdefTestCase.test_other_when_ndef_missing` |
 
 ### ISO 7816 (status word)

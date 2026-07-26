@@ -6,6 +6,7 @@ import com.licel.jcardsim.smartcardio.CardSimulator;
 
 import javacard.framework.AID;
 import javacard.framework.Applet;
+import javacard.security.ECPrivateKey;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,8 +30,9 @@ import static us.q3q.fido2.JcardsimTestSupport.wrapFidoInstallParams;
 import org.openjavacard.ndef.stub.NdefApplet;
 
 /**
- * Exercises INTEGRITY_FAILURE by corrupting stored credential bytes from the test
- * harness (reflection into jcardsim). No production/test hooks in the applet.
+ * Fault-injection tests via jcardsim reflection (no production hooks).
+ * An uninitialized resident private key surfaces as
+ * {@link FIDOConstants#CTAP2_ERR_NO_CREDENTIALS}.
  */
 public class ErrorCodeInjectionTest {
 
@@ -48,55 +50,50 @@ public class ErrorCodeInjectionTest {
     }
 
     @Test
-    public void getAssertionIntegrityFailureAfterMacCorruption() throws Exception {
+    public void getAssertionNoCredentialsAfterPrivateKeyCleared() throws Exception {
         ResponseAPDU makeCred = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
         assertEquals(0x9000, makeCred.getSW());
         assertEquals(0x00, makeCred.getData()[0] & 0xFF);
 
-        corruptResidentCredentialMac(simulator, FIDO_AID);
+        clearResidentPrivateKey(simulator, FIDO_AID);
 
         ResponseAPDU assertion = sendCtap(simulator, GET_ASSERTION_CBOR);
         assertEquals(0x9000, assertion.getSW());
-        assertEquals(FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE, assertion.getData()[0]);
+        assertEquals(FIDOConstants.CTAP2_ERR_NO_CREDENTIALS, assertion.getData()[0]);
     }
 
     @Test
-    public void makeCredentialReuseIntegrityFailureAfterMacCorruption() throws Exception {
+    public void makeCredentialReuseNoCredentialsAfterPrivateKeyCleared() throws Exception {
         ResponseAPDU first = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
         assertEquals(0x9000, first.getSW());
         assertEquals(0x00, first.getData()[0] & 0xFF);
 
-        corruptResidentCredentialMac(simulator, FIDO_AID);
+        clearResidentPrivateKey(simulator, FIDO_AID);
 
         ResponseAPDU second = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
         assertEquals(0x9000, second.getSW());
-        assertEquals(FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE, second.getData()[0]);
+        assertEquals(FIDOConstants.CTAP2_ERR_NO_CREDENTIALS, second.getData()[0]);
     }
 
     /**
-     * NDEF push uses the same HMAC check as getAssertion. Clearing the one-shot
-     * push flag and corrupting the tag makes a subsequent makeCredential fail
-     * integrity before any NDEF key material is exported.
+     * NDEF repush requires a usable resident private key. Clearing it after resetting
+     * the one-shot push flag makes the subsequent makeCredential fail closed.
      */
     @Test
-    public void ndefRepushBlockedByIntegrityFailure() throws Exception {
+    public void ndefRepushBlockedWhenPrivateKeyCleared() throws Exception {
         ResponseAPDU first = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
         assertEquals(0x9000, first.getSW());
         assertEquals(0x00, first.getData()[0] & 0xFF);
 
         clearNdefKeyPushed(simulator, FIDO_AID);
-        corruptResidentCredentialMac(simulator, FIDO_AID);
+        clearResidentPrivateKey(simulator, FIDO_AID);
 
         ResponseAPDU second = sendCtap(simulator, MAKE_CREDENTIAL_CBOR);
         assertEquals(0x9000, second.getSW());
-        assertEquals(FIDOConstants.CTAP2_ERR_INTEGRITY_FAILURE, second.getData()[0]);
+        assertEquals(FIDOConstants.CTAP2_ERR_NO_CREDENTIALS, second.getData()[0]);
     }
 
-    /**
-     * XOR the last byte of the resident credential blob (HMAC tag) via the simulator
-     * runtime — keeps corruption entirely outside production applet code.
-     */
-    static void corruptResidentCredentialMac(CardSimulator simulator, AID fidoAid)
+    static void clearResidentPrivateKey(CardSimulator simulator, AID fidoAid)
             throws Exception {
         Field runtimeField = Simulator.class.getDeclaredField("runtime");
         runtimeField.setAccessible(true);
@@ -112,8 +109,10 @@ public class ErrorCodeInjectionTest {
         assertNotNull(residentKeys);
         assertNotNull(residentKeys[0]);
 
-        byte[] cred = residentKeys[0].getEncryptedCredentialID();
-        cred[cred.length - 1] ^= (byte) 0xFF;
+        Field privateKeyField = ResidentKeyData.class.getDeclaredField("privateKey");
+        privateKeyField.setAccessible(true);
+        ECPrivateKey privateKey = (ECPrivateKey) privateKeyField.get(residentKeys[0]);
+        privateKey.clearKey();
     }
 
     static void clearNdefKeyPushed(CardSimulator simulator, AID fidoAid) throws Exception {

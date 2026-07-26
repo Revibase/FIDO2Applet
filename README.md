@@ -95,7 +95,8 @@ Full list of supported commands, intentional deviations, and install parameters:
 
 - Possession of the card is enough to sign — there is no PIN or user verification.
 - Exactly one credential per card; reinstall CAPs to reset.
-- Private keys are AES-wrapped in EEPROM; NDEF signing uses the same wear-leveled counter as FIDO2.
+- FIDO2 stores the resident private key as a persistent Java Card `ECPrivateKey` (signing uses a transient working copy). NDEF keeps its own AES wrap of the key copy it receives. NDEF signing uses the same wear-leveled counter as FIDO2.
+- Credential ID is the 33-byte compressed public key (see [docs/revibase-credential-id.md](docs/revibase-credential-id.md)).
 - Tune buffer install params only after `testAll` passes with your attestation chain size.
 
 ## Contributing

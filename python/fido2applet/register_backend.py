@@ -58,6 +58,12 @@ def register_card_with_backend(
             "re-run from --from-step make_credential"
         )
 
+    if credential_id != public_key:
+        raise RuntimeError(
+            "credentialId must equal NDEF publicKey (both are the 33-byte compressed "
+            f"secp256r1 key); got credentialId={credential_id!r} publicKey={public_key!r}"
+        )
+
     asset_type = reg.get("asset_type")
     if asset_type is None:
         asset_type = reg.get("assetType")

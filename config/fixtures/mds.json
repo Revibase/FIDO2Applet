@@ -72,7 +72,7 @@
             "rk": true,
             "up": true
         },
-        "maxCredentialIdLength": 64,
+        "maxCredentialIdLength": 33,
         "algorithms": [
             {
                 "alg": -7,

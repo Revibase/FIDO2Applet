@@ -4,21 +4,25 @@ import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.Util;
 import javacard.security.AESKey;
+import javacard.security.ECPrivateKey;
+import javacard.security.KeyBuilder;
 import javacard.security.RandomData;
 
 import javacardx.crypto.Cipher;
 
 /**
  * Stores discoverable (resident) credential metadata.
- * Persists credential ID, encrypted user.id, and public key only.
+ * Persists private key (Java Card ECPrivateKey), encrypted user.id, and public key.
+ * External FIDO credential ID is the compressed form of {@link #publicKey}.
  * user.name and RP ID are not stored (never returned / never enforced).
  */
 public class ResidentKeyData {
     private static final short IV_LEN = 16;
-    private static final short USER_ID_IV_OFFSET = 0;
+    private static final short KEY_POINT_LENGTH = 32;
+    private static final short CREDENTIAL_ID_LEN = 33;
 
     private final byte[] IVs;
-    private byte[] credential;
+    private final ECPrivateKey privateKey;
     private byte[] userId;
     private byte userIdLength;
     private final byte[] publicKey;
@@ -28,18 +32,42 @@ public class ResidentKeyData {
         IVs = new byte[IV_LEN];
         random.generateData(IVs, (short) 0, IV_LEN);
 
+        privateKey = (ECPrivateKey) KeyBuilder.buildKey(
+                KeyBuilder.TYPE_EC_FP_PRIVATE, KeyBuilder.LENGTH_EC_FP_256, false);
+        P256Constants.setCurve(privateKey);
+
         publicKey = new byte[publicKeyLength];
         Util.arrayCopyNonAtomic(publicKeyBuffer, publicKeyOffset,
                 publicKey, (short) 0, publicKeyLength);
     }
 
-    public void setEncryptedCredential(byte[] credBuffer, short credOffset, short credLen) {
-        if (credential != null) {
+    /**
+     * Stores the private scalar once. Must not be called again for this resident key.
+     */
+    public void setPrivateKey(byte[] sBuffer, short sOffset) {
+        if (privateKey.isInitialized()) {
             ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
         }
-        this.credential = new byte[credLen];
-        Util.arrayCopy(credBuffer, credOffset,
-                this.credential, (short) 0, credLen);
+        privateKey.setS(sBuffer, sOffset, KEY_POINT_LENGTH);
+    }
+
+    public ECPrivateKey getPrivateKey() {
+        return privateKey;
+    }
+
+    public boolean hasPrivateKey() {
+        return privateKey.isInitialized();
+    }
+
+    /**
+     * Writes the 33-byte compressed secp256r1 public key used as the FIDO credential ID.
+     * Stored public key must be uncompressed SEC1 ({@code 0x04||X||Y}).
+     */
+    public short packCredentialId(byte[] outBuffer, short outOffset) {
+        // publicKey[0]=0x04; X at [1..32]; Y LSB at [64]
+        outBuffer[outOffset] = (byte) (0x02 | (publicKey[64] & 1));
+        Util.arrayCopyNonAtomic(publicKey, (short) 1, outBuffer, (short) (outOffset + 1), KEY_POINT_LENGTH);
+        return CREDENTIAL_ID_LEN;
     }
 
     private short encryptableLength(short rawLength) {
@@ -62,13 +90,13 @@ public class ResidentKeyData {
         }
         short encLen = encryptableLength(userIdLength);
         userId = new byte[encLen];
-        wrapper.init(key, Cipher.MODE_ENCRYPT, IVs, USER_ID_IV_OFFSET, IV_LEN);
+        wrapper.init(key, Cipher.MODE_ENCRYPT, IVs, (short) 0, IV_LEN);
         wrapper.doFinal(userIdBuffer, userIdOffset, encLen, userId, (short) 0);
         this.userIdLength = userIdLength;
     }
 
     public void unpackUserID(AESKey key, Cipher unwrapper, byte[] targetBuffer, short targetOffset) {
-        unwrapper.init(key, Cipher.MODE_DECRYPT, IVs, USER_ID_IV_OFFSET, IV_LEN);
+        unwrapper.init(key, Cipher.MODE_DECRYPT, IVs, (short) 0, IV_LEN);
         unwrapper.doFinal(userId, (short) 0, (short) userId.length,
                 targetBuffer, targetOffset);
     }
@@ -78,15 +106,7 @@ public class ResidentKeyData {
                 targetBuffer, targetOffset, (short) publicKey.length);
     }
 
-    public byte[] getEncryptedCredentialID() {
-        return credential;
-    }
-
     public short getUserIdLength() {
         return userIdLength;
-    }
-
-    public short getCredLen() {
-        return (short) credential.length;
     }
 }

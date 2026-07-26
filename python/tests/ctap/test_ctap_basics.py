@@ -121,7 +121,14 @@ class CTAPBasicsTestCase(CTAPTestCase):
         self.assertEqual(Aaguid.NONE, res.auth_data.credential_data.aaguid)
         pubkey = res.auth_data.credential_data.public_key
         pubkey.verify(res.auth_data + self.client_data, res.att_stmt['sig'])
-        self.assertEqual(64, len(res.auth_data.credential_data.credential_id))
+        self.assertEqual(33, len(res.auth_data.credential_data.credential_id))
+        cred_id = res.auth_data.credential_data.credential_id
+        self.assertIn(cred_id[0], (0x02, 0x03))
+        # credentialId is the compressed SEC1 form of the attested COSE public key
+        x = bytes(pubkey[-2])
+        y = bytes(pubkey[-3])
+        expected_id = bytes([0x02 | (y[-1] & 1)]) + x
+        self.assertEqual(expected_id, cred_id)
 
     def test_make_credential_sets_user_present_flag(self):
         res = self.ctap2.make_credential(**self.basic_makecred_params)
