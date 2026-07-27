@@ -78,13 +78,12 @@ def register_card_with_backend(
         "mint": mint,
         "publicKey": public_key,
         "assetType": asset_type,
-        "credentialId": credential_id,
     }
 
     print(f"==> Register card with backend ({endpoint})")
     print(
         f"    mint={mint!r}, assetType={asset_type!r}, "
-        f"credentialId={credential_id[:20]}…, publicKey={public_key[:20]}…"
+        f"publicKey={public_key[:20]}…"
     )
     if dry_run:
         return {}
