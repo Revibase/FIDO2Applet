@@ -19,39 +19,33 @@
 
 package org.openjavacard.ndef.stub;
 
-import javacard.framework.AID;
 import javacard.framework.APDU;
 import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.Shareable;
 import javacard.framework.Util;
-import javacard.security.AESKey;
-import javacard.security.CryptoException;
 import javacard.security.ECKey;
 import javacard.security.ECPrivateKey;
+import javacard.security.ECPublicKey;
 import javacard.security.KeyBuilder;
-import javacard.security.MessageDigest;
+import javacard.security.KeyPair;
 import javacard.security.RandomData;
 import javacard.security.Signature;
-import javacardx.crypto.Cipher;
 
 
 /**
- * NDEF Type 4 applet that signs URLs with an AES-wrapped EC key.
+ * NDEF Type 4 applet that serves a signed URL over NFC, using its <b>own</b> P-256 key.
  *
- * <p>Base URL comes from install application data. FIDO2 pushes the credential
- * private key and compressed public key once during {@code makeCredential}
- * ({@link NdefKeyStore}). The private key is AES-256-CBC encrypted under a
- * random wrapping key in EEPROM (logical protection only: the wrapping key
- * sits in plaintext next to the ciphertext). Staging survives until the first
- * NDEF SELECT, where encryption runs; the first E104 read decrypts into
- * CLEAR_ON_DESELECT scratch, signs {@code counter || nonce}, builds the URL,
- * and clears the plaintext key. Later reads in the same session reuse the
- * cached payload. Until a key is pushed, a static placeholder URL is served.
+ * <p>This applet generates its own EC keypair on install and never shares or receives a key: the
+ * private key lives only here, as a persistent Java Card key object, and never leaves the applet.
+ * (The FIDO2 applet independently owns a <i>different</i> key for its assertions; the two public
+ * keys are bound to one card server-side at enrollment.) The base URL comes from install
+ * application data. On the first E104 read of a session the applet bumps its counter, generates a
+ * nonce, signs {@code counter || nonce} locally, and builds the URL; later reads reuse the cached
+ * payload. With no base URL configured, a static placeholder URL is served.
  */
-public final class NdefApplet extends Applet implements NdefKeyStore {
+public final class NdefApplet extends Applet {
 
     /* Instructions */
     private static final byte INS_SELECT        = ISO7816.INS_SELECT;
@@ -69,7 +63,6 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
 
     /** Max READ BINARY Le; keep small for physical JCOP (6700 on large Le is common). */
     private static final short NDEF_MAX_READ             = 32;
-    private static final short NDEF_MAX_WRITE            = 32;
     private static final short NDEF_DATA_MAX             = (short) 320;
 
     /** Maximum base URL length accepted at install time. */
@@ -85,42 +78,25 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     private static final short MAX_NDEF_URI_BODY         = (short) (
             255 - 1 - SIGNED_URI_QUERY_OVERHEAD - MAX_COUNTER_DECIMAL_DIGITS);
 
-    /** AES block / IV length. */
-    private static final short AES_BLOCK_LEN             = 16;
-
-    /** HMAC-SHA256 truncation length for stored key integrity. */
-    private static final short KEY_MAC_LEN               = 16;
-
-    /** storedEncryptedKey (48) + storedPubKey (33). */
-    private static final short KEY_BLOB_LEN              = 81;
-
-    /** FIDO2 applet AID authorized to push keys via {@link NdefKeyStore}. */
-    private static final byte[] FIDO_PARTNER_AID = {
-            (byte) 0xA0, 0x00, 0x00, 0x06, 0x47, 0x2F, 0x00, 0x01
-    };
-
     // ---- Signing constants ----
 
     private static final short NONCE_LEN       = 8;
     private static final short RAW_SIG_LEN     = 64;
     private static final short DER_SIG_MAX_LEN = 80;
+    /** Compressed SEC-1 public key length (0x02/0x03 + X). */
+    private static final short PUB_KEY_LEN      = 33;
+    private static final short KEY_POINT_LEN    = 32;
+    /** Uncompressed SEC-1 public key length (0x04 + X + Y). */
+    private static final short UNCOMPRESSED_PUB_LEN = 65;
 
-    // Offsets inside sigScratch
+    // Offsets inside sigScratch (holds only public data: counter, nonce, signature, and --
+    // transiently at install -- the uncompressed public key for compression).
     private static final short SCR_COUNTER    = 0;    // 4 bytes  big-endian counter
     private static final short SCR_NONCE      = 4;    // 8 bytes  random nonce
     private static final short SCR_DER_SIG    = 12;   // 80 bytes DER signature output
     private static final short SCR_RAW_SIG    = 92;   // 64 bytes normalised raw sig
-    private static final short SCR_DIV        = 156;  // 8 bytes  scratch for decimal division
-    private static final short SCR_DECIMAL    = 164;  // 11 bytes max uint32 decimal digits
-    private static final short SCR_PRIVKEY    = 175;  // 32 bytes decrypted private key (cleared after use)
-    private static final short SCR_SIZE       = 207;
-
-    /** CLEAR_ON_DESELECT scratch for encrypt-on-SELECT and HMAC. */
-    private static final short COMM_ENC_IV    = 0;
-    private static final short COMM_ENC_CT    = 16;
-    private static final short COMM_HMAC_MSG  = 64;
-    private static final short COMM_HMAC_OUT  = 0;
-    private static final short COMM_SCR_SIZE  = 160;
+    private static final short SCR_DIV        = 156;  // 20 bytes scratch for decimal division
+    private static final short SCR_SIZE       = 176;
 
     // P-256 / secp256r1 curve parameters
     private static final byte[] P256_P = {
@@ -180,12 +156,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
             (byte) 0xE1, 0x04, 0x01, 0x40, 0x00, (byte) 0xFF
     };
 
-    /** Transient staging for Shareable key push: priv(32) || pub(33). */
-    private static final short PENDING_PRIV_OFF = 0;
-    private static final short PENDING_PUB_OFF  = NdefKeyStore.PRIV_KEY_LEN;
-    private static final short PENDING_KEY_LEN  = (short) (NdefKeyStore.PRIV_KEY_LEN + NdefKeyStore.PUB_KEY_LEN);
-
-    // ---- Transient state (instance — not static; static transient breaks on some JCOP) ----
+    // ---- Transient state (instance -- not static; static transient breaks on some JCOP) ----
 
     private short[] vars;
     private static final byte VAR_SELECTED_FILE = (byte) 0;
@@ -196,66 +167,26 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
     /** Transient Type 4 data file (repopulated on every applet SELECT). */
     private byte[] dataBuffer;
 
-    /** Scratch for signing (CLEAR_ON_DESELECT). */
+    /** Scratch for assembling the signed URL (CLEAR_ON_DESELECT). Never holds a secret. */
     private byte[] sigScratch;
 
-    /** Scratch for key encryption and HMAC at commit time (CLEAR_ON_DESELECT). */
-    private byte[] commitScratch;
+    // ---- Persistent state (EEPROM) ----
 
-    /**
-     * Pushed key bytes awaiting encrypt-on-first-NDEF-select.
-     * CLEAR_ON_RESET so the push survives FIDO deselect (AES needs NDEF selected).
-     */
-    private byte[] pendingKeyStaging;
-
-    /**
-     * Non-zero after {@link #commit()} until {@link #encryptPendingKey()} completes.
-     * CLEAR_ON_RESET: paired with {@link #pendingKeyStaging} across applet deselect.
-     */
-    private byte[] pendingPushReady;
-
-    // ---- Persistent AES key wrapping (EEPROM) ----
-
-    /** 32-byte AES-256 wrapping key material, randomly generated at install time. */
-    private final byte[] wrappingKeySpace;
-    /**
-     * AES key object filled from {@link #wrappingKeySpace}. Prefer transient so
-     * {@code setKey} does not rewrite EEPROM every power cycle / deselect.
-     */
-    private final AESKey wrappingKey;
-    /** AES-CBC cipher for encrypting the pushed private key. */
-    private final Cipher symmetricWrapper;
-    /** AES-CBC cipher for decrypting the stored private key before signing. */
-    private final Cipher symmetricUnwrapper;
-
-    // ---- Persistent signing fields (EEPROM) ----
-
-    /**
-     * 48-byte encrypted private key: IV (16 bytes) || AES-256-CBC ciphertext (32 bytes).
-     * Valid when {@link #keyValid}[0] is non-zero.
-     */
-    private final byte[] storedEncryptedKey;
-    /** 33-byte compressed SEC-1 public key pushed by FIDO2. */
+    /** 33-byte compressed SEC-1 public key of this applet's own key. */
     private final byte[] storedPubKey;
-    /** 16-byte HMAC integrity tag over {@link #storedEncryptedKey} || {@link #storedPubKey}. */
-    private final byte[] storedKeyMac;
-    /** 32-byte key for {@link #storedKeyMac} generation. */
-    private final byte[] keyVerificationKey;
     /** Base URL bytes configured at install time. */
     private final byte[] storedBaseUrl;
     /** 2-byte big-endian length of valid bytes in storedBaseUrl. */
     private final byte[] storedUrlLen;
     /** Wear-leveled monotonic counter; every URL generation persists ~1 EEPROM byte. */
     private final SigOpCounter sigCounter;
-    /** 1-byte flag; non-zero once the encrypted key is committed and ready to use. */
-    private final byte[] keyValid;
 
     // ---- Crypto objects ----
 
-    private final ECPrivateKey signingKey;
-    private final Signature    ecSig;
-    private final RandomData   rng;
-    private final MessageDigest sha256;
+    /** This applet's own EC keypair (persistent). The private key never leaves the applet. */
+    private final KeyPair keyPair;
+    private final Signature  ecSig;
+    private final RandomData rng;
 
     // -----------------------------------------------------------------------
 
@@ -302,38 +233,32 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         vars       = JCSystem.makeTransientShortArray(NUM_VARS, JCSystem.CLEAR_ON_DESELECT);
         dataBuffer = JCSystem.makeTransientByteArray(NDEF_DATA_MAX, JCSystem.CLEAR_ON_DESELECT);
         sigScratch = JCSystem.makeTransientByteArray(SCR_SIZE, JCSystem.CLEAR_ON_DESELECT);
-        commitScratch = JCSystem.makeTransientByteArray(COMM_SCR_SIZE, JCSystem.CLEAR_ON_DESELECT);
-        pendingKeyStaging = JCSystem.makeTransientByteArray(PENDING_KEY_LEN, JCSystem.CLEAR_ON_RESET);
-        pendingPushReady  = JCSystem.makeTransientByteArray((short) 1, JCSystem.CLEAR_ON_RESET);
 
-        // EEPROM key storage
-        wrappingKeySpace     = new byte[32];
-        storedEncryptedKey   = new byte[(short)(AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN)]; // 48
-        storedPubKey         = new byte[NdefKeyStore.PUB_KEY_LEN];
-        storedKeyMac         = new byte[KEY_MAC_LEN];
-        keyVerificationKey   = new byte[32];
-        storedBaseUrl        = new byte[MAX_URL_LEN];
-        storedUrlLen         = new byte[2];
-        sigCounter           = new SigOpCounter();
-        keyValid             = new byte[1];
+        // EEPROM state (public key + config only -- no wrapped key, no wrapping secret)
+        storedPubKey  = new byte[PUB_KEY_LEN];
+        storedBaseUrl = new byte[MAX_URL_LEN];
+        storedUrlLen  = new byte[2];
+        sigCounter    = new SigOpCounter();
 
-        // AES wrapping setup (prefer transient AES key object)
-        wrappingKey        = getWrappingAESKey();
-        symmetricWrapper   = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
-        symmetricUnwrapper = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
-
-        // EC signing setup. Prefer a transient (RAM) private key so that the per-tap
-        // curve-param load, setS, and clearKey do not wear EEPROM; fall back to a
-        // flash-resident key only on cards that lack transient EC key support.
-        signingKey = buildSigningKey();
         ecSig = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
         rng   = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
-        sha256 = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
 
-        // Generate a random AES-256 wrapping key at install time
-        rng.generateData(wrappingKeySpace, (short) 0, (short) 32);
-        loadWrappingKey();
-        rng.generateData(keyVerificationKey, (short) 0, (short) 32);
+        // Generate this applet's own P-256 keypair on-card. The private key is a persistent key
+        // object; it is never extracted, wrapped, or shared. Cache the compressed public key for
+        // the signed URL.
+        ECPrivateKey priv = (ECPrivateKey) KeyBuilder.buildKey(
+                KeyBuilder.TYPE_EC_FP_PRIVATE, KeyBuilder.LENGTH_EC_FP_256, false);
+        ECPublicKey pub = (ECPublicKey) KeyBuilder.buildKey(
+                KeyBuilder.TYPE_EC_FP_PUBLIC, KeyBuilder.LENGTH_EC_FP_256, false);
+        setCurve(priv);
+        setCurve(pub);
+        keyPair = new KeyPair(pub, priv);
+        keyPair.genKeyPair();
+        // Compress: 0x02/0x03 by Y-parity, then X. getW writes 0x04 || X(32) || Y(32).
+        ((ECPublicKey) keyPair.getPublic()).getW(sigScratch, (short) 0);
+        storedPubKey[0] = (byte) (0x02 | (sigScratch[UNCOMPRESSED_PUB_LEN - 1] & 1));
+        Util.arrayCopyNonAtomic(sigScratch, (short) 1, storedPubKey, (short) 1, KEY_POINT_LEN);
+        Util.arrayFillNonAtomic(sigScratch, (short) 0, UNCOMPRESSED_PUB_LEN, (byte) 0);
 
         // Parse install params: AD bytes are the base URL (optional; empty = no URL, serve placeholder)
         if (len > MAX_URL_LEN) {
@@ -349,249 +274,25 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // NdefKeyStore implementation (called by FIDO2 while FIDO2 is selected)
-    // -----------------------------------------------------------------------
-
-    @Override
-    public Shareable getShareableInterfaceObject(AID clientAID, byte parameter) {
-        if (parameter != NdefKeyStore.SERVICE_ID) {
-            return null;
-        }
-        if (clientAID == null
-                || !clientAID.equals(FIDO_PARTNER_AID, (short) 0, (byte) FIDO_PARTNER_AID.length)) {
-            return null;
-        }
-        return this;
-    }
-
-    public void setPrivKeyByte(short offset, byte value) {
-        if (keyValid[0] != 0 || pendingPushReady[0] != 0) {
-            ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
-        }
-        if (offset >= 0 && offset < NdefKeyStore.PRIV_KEY_LEN) {
-            pendingKeyStaging[(short) (PENDING_PRIV_OFF + offset)] = value;
-        }
-    }
-
-    public void setPubKeyByte(short offset, byte value) {
-        if (keyValid[0] != 0 || pendingPushReady[0] != 0) {
-            ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
-        }
-        if (offset >= 0 && offset < NdefKeyStore.PUB_KEY_LEN) {
-            pendingKeyStaging[(short) (PENDING_PUB_OFF + offset)] = value;
-        }
-    }
-
-    /**
-     * Marks pushed key material ready in transient staging.
-     * Encryption into EEPROM is deferred to the first NDEF SELECT.
-     */
-    public void commit() {
-        if (keyValid[0] != 0 || pendingPushReady[0] != 0) {
-            ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
-        }
-        pendingPushReady[0] = 1;
-    }
-
-    /**
-     * True when a key is committed to EEPROM, or staged and pending encryption on the
-     * next SELECT. False when nothing is held (e.g. a reset wiped uncommitted staging),
-     * signalling FIDO2 that it should push the key again.
-     */
-    public boolean isKeyReady() {
-        return keyValid[0] != 0 || pendingPushReady[0] != 0;
-    }
-
-    // -----------------------------------------------------------------------
-    // Key encryption / decryption
-    // -----------------------------------------------------------------------
-
-    /**
-     * Encrypts transient staged key material into {@link #storedEncryptedKey}, stores an
-     * integrity MAC, and clears plaintext staging atomically (single EEPROM transaction).
-     */
-    private void encryptPendingKey() {
-        if (keyValid[0] != 0) {
-            return;
-        }
-        if (pendingPushReady[0] == 0) {
-            return;
-        }
-        loadWrappingKey();
-        rng.generateData(commitScratch, COMM_ENC_IV, AES_BLOCK_LEN);
-        symmetricWrapper.init(wrappingKey, Cipher.MODE_ENCRYPT,
-                commitScratch, COMM_ENC_IV, AES_BLOCK_LEN);
-        symmetricWrapper.doFinal(pendingKeyStaging, PENDING_PRIV_OFF, NdefKeyStore.PRIV_KEY_LEN,
-                commitScratch, COMM_ENC_CT);
-
-        JCSystem.beginTransaction();
-        boolean ok = false;
-        try {
-            // Transactional copy into EEPROM so a tear mid-write can abort cleanly.
-            Util.arrayCopy(commitScratch, COMM_ENC_IV,
-                    storedEncryptedKey, (short) 0, (short) (AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN));
-            Util.arrayCopy(pendingKeyStaging, PENDING_PUB_OFF,
-                    storedPubKey, (short) 0, NdefKeyStore.PUB_KEY_LEN);
-            computeAndStoreKeyMac();
-            keyValid[0] = 1;
-            ok = true;
-        } finally {
-            if (ok) {
-                JCSystem.commitTransaction();
-            } else {
-                JCSystem.abortTransaction();
-            }
-        }
-        Util.arrayFillNonAtomic(pendingKeyStaging, (short) 0, PENDING_KEY_LEN, (byte) 0);
-        pendingPushReady[0] = 0;
-    }
-
-    private void computeAndStoreKeyMac() {
-        Util.arrayCopyNonAtomic(storedEncryptedKey, (short) 0,
-                commitScratch, COMM_HMAC_MSG, (short) (AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN));
-        Util.arrayCopyNonAtomic(storedPubKey, (short) 0,
-                commitScratch, (short) (COMM_HMAC_MSG + AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN),
-                NdefKeyStore.PUB_KEY_LEN);
-        hmacSha256(keyVerificationKey, (short) 0,
-                commitScratch, COMM_HMAC_MSG, KEY_BLOB_LEN,
-                commitScratch, COMM_HMAC_OUT);
-        Util.arrayCopy(commitScratch, COMM_HMAC_OUT, storedKeyMac, (short) 0, KEY_MAC_LEN);
-    }
-
-    private boolean verifyStoredKeyMac() {
-        Util.arrayCopyNonAtomic(storedEncryptedKey, (short) 0,
-                commitScratch, COMM_HMAC_MSG, (short) (AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN));
-        Util.arrayCopyNonAtomic(storedPubKey, (short) 0,
-                commitScratch, (short) (COMM_HMAC_MSG + AES_BLOCK_LEN + NdefKeyStore.PRIV_KEY_LEN),
-                NdefKeyStore.PUB_KEY_LEN);
-        hmacSha256(keyVerificationKey, (short) 0,
-                commitScratch, COMM_HMAC_MSG, KEY_BLOB_LEN,
-                commitScratch, COMM_HMAC_OUT);
-        return SecureCompare.eq(commitScratch, COMM_HMAC_OUT, storedKeyMac, (short) 0, KEY_MAC_LEN);
-    }
-
-    private void hmacSha256(byte[] keyBuff, short keyOff,
-            byte[] content, short contentOff, short contentLen,
-            byte[] outputBuff, short outputOff) {
-        final short workingFirst = 0;
-        final short workingSecond = 32;
-        final short workingMessage = 64;
-
-        for (short i = 0; i < 32; i++) {
-            commitScratch[(short) (workingFirst + i)] =
-                    (byte) (keyBuff[(short) (keyOff + i)] ^ (byte) 0x36);
-        }
-        Util.arrayFillNonAtomic(commitScratch, workingSecond, (short) 32, (byte) 0x36);
-        Util.arrayCopyNonAtomic(content, contentOff,
-                commitScratch, workingMessage, contentLen);
-        sha256.doFinal(commitScratch, workingFirst, (short) (64 + contentLen),
-                commitScratch, workingMessage);
-
-        for (short i = 0; i < 32; i++) {
-            commitScratch[(short) (workingFirst + i)] =
-                    (byte) (keyBuff[(short) (keyOff + i)] ^ (byte) 0x5c);
-        }
-        Util.arrayFillNonAtomic(commitScratch, workingSecond, (short) 32, (byte) 0x5c);
-        sha256.doFinal(commitScratch, workingFirst, (short) 96, outputBuff, outputOff);
-    }
-
-    /**
-     * Decrypts {@link #storedEncryptedKey} into {@code sigScratch[SCR_PRIVKEY..SCR_PRIVKEY+31]}.
-     * The caller must call {@code signingKey.clearKey()} and zero SCR_PRIVKEY after use.
-     */
-    private void decryptKeyIntoScratch() {
-        loadWrappingKey();
-        symmetricUnwrapper.init(wrappingKey, Cipher.MODE_DECRYPT,
-                storedEncryptedKey, (short) 0, AES_BLOCK_LEN);
-        symmetricUnwrapper.doFinal(storedEncryptedKey, AES_BLOCK_LEN, NdefKeyStore.PRIV_KEY_LEN,
-                sigScratch, SCR_PRIVKEY);
-    }
-
-    /**
-     * Ensure the wrapping AES key is loaded from persistent key material.
-     * Prefer transient AES so setKey writes RAM; persistent AES only calls setKey
-     * when uninitialized.
-     */
-    private void loadWrappingKey() {
-        if (!wrappingKey.isInitialized()) {
-            wrappingKey.setKey(wrappingKeySpace, (short) 0);
-        }
-    }
-
-    private static AESKey getWrappingAESKey() {
-        try {
-            return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT,
-                    KeyBuilder.LENGTH_AES_256, false);
-        } catch (CryptoException e) {
-            // unsupported
-        }
-        try {
-            return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_RESET,
-                    KeyBuilder.LENGTH_AES_256, false);
-        } catch (CryptoException e) {
-            // unsupported
-        }
-        return (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
-    }
-
-    // -----------------------------------------------------------------------
-    // URL building (called while NDEF is selected — no FIDO2 contact needed)
-    // -----------------------------------------------------------------------
-
-    /**
-     * Builds the EC private key object, preferring transient (RAM) storage so that the
-     * per-tap {@link #loadSigningKey} / {@code setS} / {@code clearKey} cycle does not
-     * write EEPROM. Falls back through CLEAR_ON_RESET to flash-resident on cards that do
-     * not support transient EC keys.
-     */
-    private static ECPrivateKey buildSigningKey() {
-        try {
-            return (ECPrivateKey) KeyBuilder.buildKey(
-                    KeyBuilder.TYPE_EC_FP_PRIVATE_TRANSIENT_DESELECT, KeyBuilder.LENGTH_EC_FP_256, false);
-        } catch (CryptoException e) {
-            // unsupported; try next
-        }
-        try {
-            return (ECPrivateKey) KeyBuilder.buildKey(
-                    KeyBuilder.TYPE_EC_FP_PRIVATE_TRANSIENT_RESET, KeyBuilder.LENGTH_EC_FP_256, false);
-        } catch (CryptoException e) {
-            // unsupported; fall back to flash
-        }
-        return (ECPrivateKey) KeyBuilder.buildKey(
-                KeyBuilder.TYPE_EC_FP_PRIVATE, KeyBuilder.LENGTH_EC_FP_256, false);
-    }
-
-    /**
-     * Loads P-256 curve parameters and the decrypted private key from
-     * {@code sigScratch[SCR_PRIVKEY]} into {@link #signingKey}.
-     */
-    private void loadSigningKey() {
-        ECKey k = (ECKey) signingKey;
+    private static void setCurve(ECKey k) {
         k.setFieldFP(P256_P, (short) 0, (short) P256_P.length);
         k.setA(P256_A,       (short) 0, (short) P256_A.length);
         k.setB(P256_B,       (short) 0, (short) P256_B.length);
         k.setG(P256_G,       (short) 0, (short) P256_G.length);
         k.setR(P256_N,       (short) 0, (short) P256_N.length);
         k.setK(P256_H);
-        signingKey.setS(sigScratch, SCR_PRIVKEY, NdefKeyStore.PRIV_KEY_LEN);
     }
 
+    // -----------------------------------------------------------------------
+    // Signed-URL generation (signs locally with this applet's own key)
+    // -----------------------------------------------------------------------
+
     /**
-     * Generates a fresh signed NDEF URL and stores it in {@link #dataBuffer}.
-     * Crypto or encoding failures propagate as ISO status words (not placeholder).
+     * Generates a fresh signed NDEF URL into {@link #dataBuffer} by signing
+     * {@code counter || nonce} with this applet's own key. Crypto/encoding failures propagate as
+     * ISO status words. No private-key material ever enters {@code sigScratch}.
      */
     private void buildSignedNdefUrl() {
-        if (pendingPushReady[0] != 0) {
-            encryptPendingKey();
-        }
-        if (keyValid[0] == 0) {
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-        if (!verifyStoredKeyMac()) {
-            ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-        }
-
         // Tear-safe counter bump (~1-in-256 byte rollover).
         if (!sigCounter.increment((short) 1)) {
             ISOException.throwIt(ISO7816.SW_FILE_FULL);
@@ -599,12 +300,8 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         sigCounter.pack(sigScratch, SCR_COUNTER);
         rng.generateData(sigScratch, SCR_NONCE, NONCE_LEN);
 
-        decryptKeyIntoScratch();
-        loadSigningKey();
-        ecSig.init(signingKey, Signature.MODE_SIGN);
+        ecSig.init(keyPair.getPrivate(), Signature.MODE_SIGN);
         short derLen = ecSig.sign(sigScratch, SCR_COUNTER, (short) 12, sigScratch, SCR_DER_SIG);
-        signingKey.clearKey();
-        Util.arrayFillNonAtomic(sigScratch, SCR_PRIVKEY, NdefKeyStore.PRIV_KEY_LEN, (byte) 0);
 
         normalizeDerSigToRaw64(sigScratch, SCR_DER_SIG, derLen, sigScratch, SCR_RAW_SIG);
 
@@ -842,7 +539,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         pos = Util.arrayCopyNonAtomic(storedBaseUrl, schemeSkip, out, pos, baseBodyLen);
         out[pos++] = '?'; out[pos++] = 'p'; out[pos++] = 'k'; out[pos++] = '=';
         pos = (short) (pos + encodeBase64Url(compressedPub, compressedOff,
-                NdefKeyStore.PUB_KEY_LEN, out, pos));
+                PUB_KEY_LEN, out, pos));
         out[pos++] = '&'; out[pos++] = 'c'; out[pos++] = '=';
         pos = (short) (pos + appendUInt32DecimalPadded(counterBE, counterOff,
                 scratch, scratchOff, out, pos));
@@ -867,7 +564,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
      */
     private void prepareNdefDataFile() {
         final short urlLen = Util.getShort(storedUrlLen, (short) 0);
-        if (urlLen > 0 && (keyValid[0] != 0 || pendingPushReady[0] != 0)) {
+        if (urlLen > 0) {
             buildSignedNdefUrl();
         } else {
             servePlaceholder();
@@ -892,10 +589,6 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         if (selectingApplet()) {
             vars[VAR_SELECTED_FILE] = FILEID_NONE;
             vars[VAR_PAYLOAD_READY] = 0;
-            // Encrypt staged key on SELECT; defer signing until first E104 read.
-            if (pendingPushReady[0] != 0) {
-                encryptPendingKey();
-            }
             return;
         }
 
@@ -947,7 +640,7 @@ public final class NdefApplet extends Applet implements NdefKeyStore {
         byte[] buffer = apdu.getBuffer();
         short fileId = vars[VAR_SELECTED_FILE];
         short offset  = Util.getShort(buffer, ISO7816.OFFSET_P1);
-        // E104 only — CC (E103) is static and must not trigger a sign.
+        // E104 only -- CC (E103) is static and must not trigger a sign.
         if (fileId == FILEID_NDEF_DATA) {
             ensurePayloadReady();
         }

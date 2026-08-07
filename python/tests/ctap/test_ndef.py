@@ -208,10 +208,8 @@ class NdefSignedUrlTestCase(NdefTestCase):
 
         self.assertEqual(uri_before, uri_after)
 
-    # Note: the I1 power-loss regression (a reset wipes NDEF's CLEAR_ON_RESET staging while
-    # the EEPROM-persistent ndefKeyPushed flag survives) cannot be reproduced through the
-    # simulator's reset(), which also clears the persistent flag. It is covered faithfully by
-    # ErrorCodeInjectionTest.ndefRecoversAfterStagingWipedButFlagPersists (Java, reflection).
+    # Note: the NDEF applet owns its own key and shares nothing with FIDO2, so the old
+    # key-push / power-loss-staging regressions no longer apply.
 
     def test_min_counter_rejects_stale(self):
         self.basic_makecred_params["options"] = {"rk": True}

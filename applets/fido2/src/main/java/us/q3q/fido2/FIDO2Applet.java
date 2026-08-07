@@ -1,12 +1,10 @@
 package us.q3q.fido2;
 
-import javacard.framework.AID;
 import javacard.framework.APDU;
 import javacard.framework.Applet;
 import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
-import javacard.framework.Shareable;
 import javacard.framework.Util;
 import javacard.security.CryptoException;
 import javacard.security.ECKey;
@@ -18,8 +16,6 @@ import javacard.security.MessageDigest;
 import javacard.security.RandomData;
 import javacard.security.Signature;
 import javacardx.apdu.ExtendedLength;
-
-import org.openjavacard.ndef.stub.NdefKeyStore;
 
 /**
  * A single-credential P-256 signing appliance that speaks CTAP2/U2F framing.
@@ -44,9 +40,9 @@ import org.openjavacard.ndef.stub.NdefKeyStore;
  *   <li><b>Attestation:</b> {@code packed} self-attestation by default; switchable to basic
  *       ({@code x5c}) via vendor command {@code 0x46}, gated by install param {@code 0x00}
  *       and only while the signature counter is still zero (before any signing).</li>
- *   <li><b>NDEF companion:</b> during {@code makeCredential} the key is pushed once to the
- *       NDEF applet over a firewall-crossing Shareable ({@link NdefKeyStore}) so it can
- *       serve a signed URL over NFC. See {@link #pushKeyToNdefApplet}.</li>
+ *   <li><b>NDEF companion:</b> the NDEF applet owns a <i>separate</i> key and signs its own URL;
+ *       this applet's credential key is never shared with it. The two public keys are bound to
+ *       one card server-side at enrollment.</li>
  * </ul>
  *
  * <p><b>Memory discipline (recurring pattern throughout):</b> secrets are held in JavaCard
@@ -78,22 +74,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
     private static final short CLIENT_DATA_HASH_LEN = 32;
     /** Largest request {@code user.id} we accept (it is validated then discarded). */
     private static final short MAX_USER_ID_LENGTH = 64;
-
-    // ---- NDEF companion wiring -------------------------------------------------------
-
-    /** AID of the NDEF applet we push the credential key to during makeCredential. */
-    private static final byte[] NDEF_CLIENT_AID = {
-            (byte) 0xD2, (byte) 0x76, 0x00, 0x00, (byte) 0x85, 0x01, 0x01
-    };
-    private static final short NDEF_PUSH_SCRATCH_SIZE =
-            (short) (KEY_POINT_LENGTH + CREDENTIAL_ID_LEN);
-    /**
-     * Transient (CLEAR_ON_DESELECT) scratch for extracting the private scalar before
-     * pushing it to NdefApplet. Layout: priv(32) || compressedPub(33). Zeroed after use.
-     */
-    private byte[] ndefPushScratch;
-    /** True after the one-time key push to NdefApplet succeeded (persistent). */
-    private boolean ndefKeyPushed;
 
     // ---- Install-time configuration (see the install() parameter parser) -------------
 
@@ -613,64 +593,6 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         sendNoCopy(apdu, offset);
     }
 
-    /**
-     * Pushes the credential private key and compressed public key to NdefApplet
-     * via {@link NdefKeyStore}. Normally pushes once and returns early thereafter, but
-     * re-pushes if NDEF reports (via {@code isKeyReady()}) that it is no longer holding
-     * the key — e.g. a reset wiped NDEF's uncommitted CLEAR_ON_RESET staging in the window
-     * before it encrypts on SELECT. This keeps the persistent {@code ndefKeyPushed} flag
-     * from permanently masking a lost key (the I1 fix).
-     *
-     * @return true if the key is (or was already) available to NDEF; false if NDEF
-     *         is unavailable or the push failed
-     */
-    private boolean pushKeyToNdefApplet(APDU apdu) {
-        if (!hasUsableResidentKey()) {
-            return false;
-        }
-        AID ndefAid = JCSystem.lookupAID(NDEF_CLIENT_AID, (short) 0,
-                (byte) NDEF_CLIENT_AID.length);
-        if (ndefAid == null) {
-            // No NDEF applet present. If a prior push succeeded, treat as done; else fail.
-            return ndefKeyPushed;
-        }
-        Shareable s = JCSystem.getAppletShareableInterfaceObject(
-                ndefAid, NdefKeyStore.SERVICE_ID);
-        if (!(s instanceof NdefKeyStore)) {
-            return ndefKeyPushed;
-        }
-        NdefKeyStore ks = (NdefKeyStore) s;
-        if (ndefKeyPushed) {
-            // Confirm NDEF still holds the key; if a reset wiped uncommitted staging,
-            // fall through and re-push so the NDEF channel is recoverable.
-            try {
-                if (ks.isKeyReady()) {
-                    return true;
-                }
-            } catch (Exception e) {
-                return true;
-            }
-        }
-        try {
-            residentKeys[0].getPrivateKey().getS(ndefPushScratch, (short) 0);
-            residentKeys[0].packCredentialId(ndefPushScratch, KEY_POINT_LENGTH);
-
-            for (short i = 0; i < KEY_POINT_LENGTH; i++) {
-                ks.setPrivKeyByte(i, ndefPushScratch[i]);
-            }
-            for (short i = 0; i < CREDENTIAL_ID_LEN; i++) {
-                ks.setPubKeyByte(i, ndefPushScratch[(short) (KEY_POINT_LENGTH + i)]);
-            }
-            ks.commit();
-            ndefKeyPushed = true;
-            return true;
-        } catch (Exception e) {
-            return false;
-        } finally {
-            Util.arrayFillNonAtomic(ndefPushScratch, (short) 0, NDEF_PUSH_SCRATCH_SIZE, (byte) 0);
-        }
-    }
-
     // =====================================================================================
     // CTAP commands: makeCredential, getAssertion, getInfo
     // =====================================================================================
@@ -691,8 +613,9 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
      *
      * <p>Behavior: on the first call it generates the sole resident P-256 key; every later
      * call reuses it and returns a fresh attestation over the same key (credential ID = the
-     * compressed public key). Emits a {@code packed} attestation object, then pushes the key
-     * to the NDEF applet once. {@code buffer[0]} is the command byte, so parsing starts at 1.
+     * compressed public key). Emits a {@code packed} attestation object. The key stays in this
+     * applet; the NDEF companion signs its own URL with a separate key.
+     * {@code buffer[0]} is the command byte, so parsing starts at 1.
      *
      * @param lc     total request length including the command byte
      * @param buffer request buffer ({@link #bufferMem} or the APDU buffer)
@@ -881,10 +804,7 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
                 transientStorage.setStreamX5CLater(true);
             }
         }
-        // One-time NDEF key push (re-pushes only if NDEF lost the key to a reset).
-        if (!pushKeyToNdefApplet(apdu)) {
-            sendErrorByte(apdu, FIDOConstants.CTAP1_ERR_OTHER);
-        }
+        // The NDEF companion owns a separate key and signs its own URL; nothing to share.
         doSendResponse(apdu, outputLen);
     }
 
@@ -2202,14 +2122,12 @@ public final class FIDO2Applet extends Applet implements ExtendedLength {
         }
         residentKeys = new ResidentKeyData[1];
         numResidentCredentials = 0;
-        ndefKeyPushed = false;
         counter = new SigOpCounter();
         random = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
         attester = getECSig();
         sha256 = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
         transientStorage = new TransientStorage();
         initCredKey(true);
-        ndefPushScratch = JCSystem.makeTransientByteArray(NDEF_PUSH_SCRATCH_SIZE, JCSystem.CLEAR_ON_DESELECT);
     }
 
 }

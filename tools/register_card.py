@@ -345,7 +345,7 @@ def step_make_credential_physical(config: dict[str, Any], dry_run: bool) -> dict
             "    WARN: make_credential.options.rk is false — "
             "NDEF signed URLs require a resident key (rk:true)"
         )
-    print("    (pushes signing key to NdefApplet via NdefKeyStore after credential creation)")
+    print("    (FIDO2 and NDEF own independent keys; nothing is shared between applets)")
     if dry_run:
         return {}
 

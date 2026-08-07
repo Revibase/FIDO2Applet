@@ -131,8 +131,11 @@ class CTAPErrorCodeTestCase(CTAPTestCase):
         self.assertEqual(CtapError.ERR.INVALID_COMMAND, res[0])
 
 
-class CTAPErrorCodeNoNdefTestCase(CTAPTestCase):
-    """CTAP1_ERR_OTHER when NDEF applet is not installed (push fails)."""
+class CTAPNoNdefTestCase(CTAPTestCase):
+    """makeCredential succeeds even when the NDEF companion applet is absent.
+
+    The two applets own independent keys; FIDO2 no longer pushes anything to NDEF, so NDEF is
+    not a dependency of makeCredential."""
 
     def setUp(
         self,
@@ -140,7 +143,7 @@ class CTAPErrorCodeNoNdefTestCase(CTAPTestCase):
     ) -> None:
         super().setUp((bytes([0xA1, 0x00, 0xF5]), None))
 
-    def test_other_when_ndef_missing(self):
-        with self.assertRaises(CtapError) as ctx:
-            self.ctap2.make_credential(**self.basic_makecred_params)
-        self.assertEqual(CtapError.ERR.OTHER, ctx.exception.code)
+    def test_make_credential_succeeds_without_ndef(self):
+        self.basic_makecred_params["options"] = {"rk": True}
+        result = self.ctap2.make_credential(**self.basic_makecred_params)
+        self.assertIsNotNone(result.auth_data)

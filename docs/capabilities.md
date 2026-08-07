@@ -14,6 +14,30 @@
 
 Applet AIDs: FIDO2 `A0000006472F0001`, NDEF `D2760000850101`.
 
+## Key protection & threat model
+
+**Two applets, two independent keys — nothing is ever shared between them.** The FIDO2 applet and
+the NDEF applet each generate and hold their **own** P-256 key on-card, as a persistent Java Card
+`ECPrivateKey` key object. Neither private key is ever transferred, wrapped, copied, or exposed
+across the applet firewall. The two public keys are different; they are bound to one card
+**server-side at enrollment** (provisioning posts both the FIDO `credentialId` and the NDEF `pk`).
+
+**No command on either applet returns private-key material.** The full command surface — FIDO2
+`makeCredential` / `getAssertion` / `getInfo` / vendor `0x46` / U2F register+authenticate, and
+NDEF SELECT / READ BINARY (UPDATE BINARY is disabled) — emits only public keys, credential IDs,
+attestation certs, and signatures. There is no export, dump, or debug path. Each applet signs
+locally, in its own selected context, using its own key object; the private scalar never enters
+an application buffer at all. No key material crosses the firewall because there is no
+inter-applet key channel to attack.
+
+**At-rest confidentiality depends on the secure element.** Both keys are stored as platform key
+objects — there is no software wrapping and no wrapping secret to protect. Confidentiality at rest
+(against physical EEPROM readout, side-channel, or fault attacks) is delegated entirely to the SE;
+there are no application-level countermeasures. Choose hardware certified for your threat model
+(CC EAL5+/6+ or FIPS 140-2/3, with DPA/fault/nonce-quality assurances). Because the card requires
+no PIN or user verification, **possession of the card is full authorization to obtain
+signatures** — by design.
+
 ## CTAP 2.0 commands
 
 | Command | Status |
@@ -43,7 +67,7 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
 | Attestation | `packed` self-attestation by default; basic (`x5c`) after cert install |
-| Credential ID | Fixed **33 bytes** — compressed secp256r1 public key (`0x02/0x03 \|\| X`); equals NDEF `pk` |
+| Credential ID | Fixed **33 bytes** — compressed secp256r1 public key (`0x02/0x03 \|\| X`) of the FIDO2 key (distinct from the NDEF `pk`) |
 | Private key storage | Persistent Java Card `ECPrivateKey`; signing uses a transient working key (never the persistent object directly) |
 
 ### `getAssertion`
@@ -52,7 +76,7 @@ Options: `rk: true`, `up: true` only. Extensions: none. `maxCredentialIdLength`:
 |----------|--------|
 | `allowList` | Ignored — always signs with the resident key if present |
 | RP ID | Not enforced — signs over whatever RP ID the host sends |
-| User `id` | Always the **33-byte compressed public key** (same as credential ID / NDEF `pk`) |
+| User `id` | Always the **33-byte compressed public key** (same as the FIDO credential ID) |
 | `up: false` | Accepted — signs silently with the UP flag cleared |
 | `uv: true` | `UNSUPPORTED_OPTION` (no built-in UV) |
 | `pinUvAuthParam` | Zero-length → `PIN_NOT_SET`; anything else → `PIN_AUTH_INVALID` |
@@ -80,11 +104,11 @@ Raw U2F uses `CLA 0x00`; errors are ISO 7816 status words, not CTAP bytes.
 
 ## NDEF (contactless)
 
-Not part of FIDO. On NFC read, the NDEF applet returns an HTTPS URL with query params `pk`, `n`, `c`, `s` where `s` is an ECDSA P-256 signature over `(counter || nonce)` using the same P-256 key from `makeCredential`. `pk` equals the FIDO credential ID / assertion `user.id`.
+Not part of FIDO. On NFC read, the NDEF applet returns an HTTPS URL with query params `pk`, `n`, `c`, `s` where `s` is an ECDSA P-256 signature over `(counter || nonce)` using the **NDEF applet's own** P-256 key (generated on-card, independent of the FIDO2 key). `pk` is that key's 33-byte compressed public key — **distinct** from the FIDO credential ID; the server binds both to one card at enrollment.
 
 NDEF’s signature counter is **independent** of FIDO2’s. Verifiers should check the signature and **should** reject replays by persisting the last-seen `c` per `pk` (pass `min_counter=last+1` to `verify_signed_ndef_uri`). NFC Type 4 is read-only; anti-replay is server-side. Optional `base_url` on the verifier only checks URI prefix (the base URL is not covered by the signature).
 
-Placeholder URL until `makeCredential` runs. Key material pushed by FIDO2 is AES-wrapped on the first NDEF SELECT; the signed payload is built on the first E104 data read. See [applets/ndef/README.md](../applets/ndef/README.md).
+The NDEF applet generates its own key on install and signs locally; the signed payload is built on the first E104 data read. A placeholder URL is served only when no base URL is configured. See [applets/ndef/README.md](../applets/ndef/README.md).
 
 ## Install parameters (FIDO2 applet)
 
@@ -120,7 +144,7 @@ Internal codes that need fault injection are covered in Java unit tests.
 | `PIN_AUTH_INVALID` (`0x33`) | Non-empty pinUvAuthParam | `test_error_codes.test_pin_auth_invalid` |
 | `PIN_NOT_SET` (`0x35`) | Empty pinUvAuthParam | `test_error_codes.test_pin_not_set` |
 | `REQUEST_TOO_LARGE` (`0x39`) | user.id &gt; 64 | `test_error_codes.test_request_too_large_user_id` |
-| `OTHER` (`0x7F`) | NDEF push failed (no NDEF applet) | `CTAPErrorCodeNoNdefTestCase.test_other_when_ndef_missing` |
+| `OTHER` (`0x7F`) | Internal failure (e.g. EC key generation) | Not CI-covered (no production test hooks) |
 
 ### ISO 7816 (status word)
 

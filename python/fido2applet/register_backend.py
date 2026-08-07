@@ -58,11 +58,9 @@ def register_card_with_backend(
             "re-run from --from-step make_credential"
         )
 
-    if credential_id != public_key:
-        raise RuntimeError(
-            "credentialId must equal NDEF publicKey (both are the 33-byte compressed "
-            f"secp256r1 key); got credentialId={credential_id!r} publicKey={public_key!r}"
-        )
+    # The FIDO2 and NDEF applets own independent keys, so the FIDO credentialId and the NDEF
+    # publicKey are different 33-byte compressed secp256r1 keys. Both are sent so the backend can
+    # bind them to one card at enrollment.
 
     asset_type = reg.get("asset_type")
     if asset_type is None:
@@ -76,14 +74,15 @@ def register_card_with_backend(
 
     payload: dict[str, Any] = {
         "mint": mint,
-        "publicKey": public_key,
+        "publicKey": public_key,        # NDEF applet key (signs the NFC URL)
+        "credentialId": credential_id,  # FIDO2 applet key (signs assertions)
         "assetType": asset_type,
     }
 
     print(f"==> Register card with backend ({endpoint})")
     print(
         f"    mint={mint!r}, assetType={asset_type!r}, "
-        f"publicKey={public_key[:20]}…"
+        f"publicKey(ndef)={public_key[:20]}… credentialId(fido)={credential_id[:20]}…"
     )
     if dry_run:
         return {}

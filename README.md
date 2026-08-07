@@ -7,7 +7,7 @@ A **JavaCard signing appliance** with two applets on one card:
 | **FIDO2** (`applets/fido2/`) | PC/SC, CTAP-like APDUs | Create one P-256 key, sign challenges |
 | **NDEF** (`applets/ndef/`) | NFC tap (Type 4 tag) | Serve a signed HTTPS URL with the same key |
 
-Both applets share one private key via [`NdefKeyStore`](applets/ndef/src/main/java/org/openjavacard/ndef/stub/NdefKeyStore.java). The key is created on `makeCredential` and never leaves the card.
+Each applet owns a **separate** on-card P-256 key that never leaves its applet — nothing is shared between them. The FIDO2 key is created on `makeCredential`; the NDEF key is generated when the NDEF applet is installed. The two public keys are bound to one card server-side at enrollment.
 
 > **Not FIDO-certified.** This reuses CTAP/U2F framing for host integration but is **not** a full WebAuthn passkey token. See [docs/capabilities.md](docs/capabilities.md) for what is and is not supported.
 
@@ -95,7 +95,7 @@ Full list of supported commands, intentional deviations, and install parameters:
 
 - Possession of the card is enough to sign — there is no PIN or user verification.
 - Exactly one credential per card; reinstall CAPs to reset.
-- FIDO2 stores the resident private key as a persistent Java Card `ECPrivateKey` (signing uses a transient working copy). NDEF keeps its own AES wrap of the key copy it receives. FIDO2 and NDEF each maintain an **independent** wear-leveled signature counter.
+- FIDO2 and NDEF each hold their **own** independent P-256 key as a persistent Java Card `ECPrivateKey`; no key is shared or transferred between applets, and neither is exposed by any command. Each applet maintains its own wear-leveled signature counter. See [docs/capabilities.md](docs/capabilities.md#key-protection--threat-model).
 - Credential ID is the 33-byte compressed public key; `getAssertion` returns the same value as `user.id` (and NDEF `pk`). See [docs/capabilities.md](docs/capabilities.md).
 - Tune buffer install params only after `testAll` passes with your attestation chain size.
 

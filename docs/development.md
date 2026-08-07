@@ -58,7 +58,7 @@ arch -x86_64 ./venv-x86/bin/pip install -U -r requirements.txt
 | Path | Role |
 |------|------|
 | `applets/fido2/src/main/java/` | FIDO2 applet |
-| `applets/ndef/src/main/java/` | NDEF applet + `NdefKeyStore` shareable |
+| `applets/ndef/src/main/java/` | NDEF applet (owns its own signing key) |
 | `python/fido2applet/` | Provisioning, jcardsim harness, NDEF helpers |
 | `python/tests/` | Integration tests (`unittest discover`) |
 | `tools/` | CLIs (`register_card.py`, `get_install_parameters.py`, …) |
