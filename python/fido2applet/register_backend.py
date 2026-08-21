@@ -1,4 +1,4 @@
-"""POST card secp256r1 public key to Revibase /api/mint after provisioning."""
+"""POST card secp256r1 public key to Revibase /api/initialize after provisioning."""
 
 from __future__ import annotations
 
@@ -10,6 +10,18 @@ import urllib.request
 from typing import Any
 
 from fido2applet.provision_state import ProvisionState
+
+TOKEN_TYPE_NAMES = ("Controlled", "Bearer")
+
+
+def _resolve_token_type(reg: dict[str, Any]) -> str:
+    raw = reg.get("token_type", "Controlled")
+    if raw in TOKEN_TYPE_NAMES:
+        return raw
+    raise ValueError(
+        "register.token_type must be 'Controlled' or 'Bearer' "
+        f"(got {raw!r})"
+    )
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -39,13 +51,12 @@ def register_card_with_backend(
         return None
 
     endpoint = reg.get("end_point") or reg.get("endpoint")
-    mint = reg.get("mint")
-    if not endpoint or not mint:
-        print("==> Skip register (register.end_point or register.mint not configured)")
+    if not endpoint:
+        print("==> Skip register (register.end_point not configured)")
         return None
 
-    public_key = state.verify_ndef.get("public_key")
-    if not public_key:
+    ndef_public_key = state.verify_ndef.get("public_key")
+    if not ndef_public_key:
         raise RuntimeError(
             "verify_ndef.public_key missing from provision state; "
             "re-run from --from-step verify_ndef"
@@ -58,31 +69,37 @@ def register_card_with_backend(
             "re-run from --from-step make_credential"
         )
 
-    # The FIDO2 and NDEF applets own independent keys, so the FIDO credentialId and the NDEF
-    # publicKey are different 33-byte compressed secp256r1 keys. Both are sent so the backend can
-    # bind them to one card at enrollment.
+    # FIDO2 and NDEF applets use independent secp256r1 keys.
+    # POST /api/initialize expects:
+    #   publicKey   — FIDO2 credential id (compressed secp256r1 pubkey; PDA seed)
+    #   identifier  — NDEF URL pk (chip binding field stored on the token)
+    #   tokenType   — "Controlled" or "Bearer"
+    secp256r1_public_key = credential_id
+    identifier = reg.get("identifier") or ndef_public_key
+    token_type = _resolve_token_type(reg)
 
-    asset_type = reg.get("asset_type")
-    if asset_type is None:
-        asset_type = reg.get("assetType")
-
-    secret = reg.get("secret") or os.environ.get("OPERATOR_SECRET")
+    secret = (
+        reg.get("secret")
+        or os.environ.get("MINT_API_SECRET")
+        or os.environ.get("OPERATOR_SECRET")
+    )
     if not secret and not dry_run:
         raise ValueError(
-            "register.secret or OPERATOR_SECRET env var is required for backend registration"
+            "register.secret or MINT_API_SECRET / OPERATOR_SECRET env var "
+            "is required for backend registration"
         )
 
     payload: dict[str, Any] = {
-        "mint": mint,
-        "publicKey": public_key,        # NDEF applet key (signs the NFC URL)
-        "credentialId": credential_id,  # FIDO2 applet key (signs assertions)
-        "assetType": asset_type,
+        "publicKey": secp256r1_public_key,
+        "identifier": identifier,
+        "tokenType": token_type,
     }
 
     print(f"==> Register card with backend ({endpoint})")
     print(
-        f"    mint={mint!r}, assetType={asset_type!r}, "
-        f"publicKey(ndef)={public_key[:20]}… credentialId(fido)={credential_id[:20]}…"
+        f"    tokenType={token_type!r}, "
+        f"publicKey(fido)={secp256r1_public_key[:20]}… "
+        f"identifier(ndef)={identifier[:20]}…"
     )
     if dry_run:
         return {}
@@ -119,9 +136,9 @@ def register_card_with_backend(
     print(f"    Backend response: {result}")
     return {
         "register": {
-            "mint": mint,
-            "public_key": public_key,
-            "asset_type": asset_type,
+            "public_key": secp256r1_public_key,
+            "identifier": identifier,
+            "token_type": token_type,
             "credential_id": credential_id,
             "result": result,
         }

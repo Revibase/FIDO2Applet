@@ -31,7 +31,7 @@
   },
 
   "ndef_install": {
-    "base_url": "https://app.revibase.com/vault"
+    "base_url": "https://app.revibase.com/accessory"
   },
 
   "fido_install": {
@@ -68,9 +68,8 @@
   },
   "register": {
     "enabled": true,
-    "end_point": "https://developer.revibase.com/api/mint",
-    "mint": null,
+    "end_point": "https://developer.revibase.com/api/initialize",
     "secret": null,
-    "asset_type": 0
+    "token_type": "Controlled"
   }
 }
